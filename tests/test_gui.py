@@ -105,6 +105,12 @@ def test_clicking_rows_ticks_and_unticks_them(app):
     assert app.checked == set() and app.tree.set(str(index), "sel") == gui.UNCHECKED
 
 
+def test_row_selection_does_not_depend_on_native_theme_region_labels(app, monkeypatch):
+    monkeypatch.setattr(app.tree, "identify_region", lambda *args: "tree")
+    index = click_row(app, "plain")
+    assert app.checked == {index}
+
+
 def test_all_and_none_buttons(app):
     button(app, "All").invoke()
     assert len(app.checked) == len(app.projects) == 7

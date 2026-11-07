@@ -20,7 +20,10 @@ ROOT_FILES = MODULES | {"gui.py", "LICENSE", "README.md", "CHANGELOG.md", "CONTR
 EXTRA_FILES = {"docs/preview.png", "scripts/check_dist.py", ".github/workflows/tests.yml",
                ".github/workflows/publish.yml", "tests/conftest.py", "tests/test_core.py",
                "tests/test_edge_cases.py", "tests/test_gui.py", "tests/test_privacy_backup.py",
-               "tests/test_workflows.py"}
+               "tests/test_workflows.py", "tests/test_release.py", ".github/coverage-badge.json",
+               ".github/workflows/desktop.yml", "scripts/build_desktop.py",
+               "scripts/update_coverage_badge.py", "desktop/cli_entry.py", "desktop/gui_entry.py",
+               "desktop/runtime.py", "desktop/licenses/Tk-license.terms", "desktop/licenses/Tcl-license.terms"}
 EGG_INFO = {"PKG-INFO", "SOURCES.txt", "dependency_links.txt", "entry_points.txt",
             "requires.txt", "top_level.txt"}
 

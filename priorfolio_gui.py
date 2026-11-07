@@ -671,7 +671,9 @@ class App(tk.Tk):
     def on_click(self, event):
         self.tip.hide()
         row = self.tree.identify_row(event.y)
-        if row and not self.busy and self.tree.identify_region(event.x, event.y) == "cell":
+        # Native themes do not agree on the region label for a data cell.
+        # A row and a displayed column identify the clickable area directly.
+        if row and not self.busy and self.tree.identify_column(event.x):
             self.tree.focus(row)
             self.tree.focus_set()
             self.set_checked(int(row), int(row) not in self.checked)

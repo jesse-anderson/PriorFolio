@@ -1,5 +1,11 @@
 # PriorFolio
 
+[![Tests](https://github.com/jesse-anderson/PriorFolio/actions/workflows/tests.yml/badge.svg)](https://github.com/jesse-anderson/PriorFolio/actions/workflows/tests.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jesse-anderson/PriorFolio/main/.github/coverage-badge.json)](https://github.com/jesse-anderson/PriorFolio/actions/workflows/tests.yml)
+[![Desktop builds](https://github.com/jesse-anderson/PriorFolio/actions/workflows/desktop.yml/badge.svg)](https://github.com/jesse-anderson/PriorFolio/actions/workflows/desktop.yml)
+[![PyPI](https://img.shields.io/pypi/v/priorfolio?include_prereleases)](https://pypi.org/project/priorfolio/)
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue)](https://github.com/jesse-anderson/PriorFolio/blob/main/LICENSE)
+
 Prepare IP disclosures and preserve the evidence behind them.
 
 ![PriorFolio displaying a synthetic example disclosure](https://raw.githubusercontent.com/jesse-anderson/PriorFolio/main/docs/preview.png)
@@ -39,6 +45,29 @@ priorfolio --gui
 
 Git must be installed separately and available on `PATH`. Tkinter is needed
 only for the desktop interface; pip cannot install the system Tk libraries.
+
+## Desktop downloads and builds
+
+The **Desktop builds** workflow creates Windows x64, Linux x64 and macOS arm64
+archives with a windowed **PriorFolio** app and a separate **PriorFolioCLI**.
+Python and Tk are bundled; Git is still installed separately. Download a release
+archive, extract it completely and keep each application folder intact.
+Initial builds are unsigned and macOS builds are not notarized.
+
+To build locally on the operating system you intend to distribute for:
+
+```console
+python -m pip install -e ".[desktop]"
+python scripts/build_desktop.py
+```
+
+The build checks GUI startup without opening a visible window and exercises
+generation, snapshots, backup export and restoration through the frozen CLI.
+Archives and SHA-256 sidecars go to `dist/desktop/`. Linux builds use Ubuntu 22.04;
+macOS and Linux archives preserve the bundle's symlinks and executable permissions.
+Runtime license notices are included. The Tcl/Tk fallback notices come from the
+official [Tcl](https://github.com/tcltk/tcl/blob/core-8-6-13/license.terms) and
+[Tk](https://github.com/tcltk/tk/blob/core-8-6-13/license.terms) 8.6 distributions.
 
 ## Disclosure workflow
 
@@ -169,6 +198,7 @@ openssl ts -verify -data evidence.json -in timestamps/digicert.tsr -CAfile trust
 ```console
 python -m pip install -e ".[dev]"
 python -m pytest
+python -m pytest --cov --cov-report=term-missing --cov-report=json:coverage.json
 python -m build
 python -m twine check --strict dist/*
 python scripts/check_dist.py dist
@@ -179,6 +209,11 @@ real Tk windows and skip when a display is unavailable. Set
 `PRIORFOLIO_TEST_OFFSCREEN=1` to keep test windows outside the visible desktop;
 this still requires a working display. `PRIORFOLIO_NETWORK=1`
 enables live timestamp-service tests; `PRIORFOLIO_SLOW=1` enables a 2.2 GB fixture.
+The coverage badge reports measured line coverage of the CLI, export logic and
+GUI, including subprocess execution. CI also records branch coverage. Build and
+launcher scripts are outside that application metric. The badge updates after
+the full test matrix passes on `main`; PyPI's version badge resolves after the
+first package upload.
 See [Contributing](https://github.com/jesse-anderson/PriorFolio/blob/main/CONTRIBUTING.md),
 [Security](https://github.com/jesse-anderson/PriorFolio/blob/main/SECURITY.md), and
 [Releasing](https://github.com/jesse-anderson/PriorFolio/blob/main/RELEASING.md).

@@ -15,6 +15,9 @@ outputs and archives outside it.
    The last command checks the archive contents, creates an isolated environment,
    installs the wheel without an index, and exercises backup and restore.
    Keep older release artifacts in a separate directory.
+   Also require the **Desktop builds** workflow to pass. Its artifacts contain
+   each platform's GUI/CLI archive and checksum; attach those tested archives
+   to the GitHub release alongside the Python distributions.
 4. Review `git status --short` and `git diff --cached --name-only`. Include only
    source, tests, scripts, documentation, licensing, packaging and CI files.
    Never upload a ZIP of the working directory or a private evidence archive.
@@ -69,8 +72,9 @@ See the official [Trusted Publishing guide](https://docs.pypi.org/trusted-publis
    the package description, image and links on TestPyPI.
 3. Once the rehearsal and CI pass, run **Publish package** from the same tag with
    `pypi` selected. Verify installation from PyPI in another fresh environment.
-   Attach only the reviewed wheel and source distribution to the GitHub release.
+   Attach only the reviewed wheel, source distribution and tested desktop
+   archives/checksums to the GitHub release.
 
-The GUI needs Tkinter and all workflows need Git. The package does not bundle
-those system dependencies. Existing private evidence must remain backed up
+The pip-installed GUI needs Tkinter and all workflows need Git. Desktop archives
+bundle Python/Tk and their notices, but require Git separately. Existing private evidence must remain backed up
 separately throughout the release process.

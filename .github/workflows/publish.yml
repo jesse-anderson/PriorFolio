@@ -27,6 +27,8 @@ jobs:
           PY
   tests:
     needs: release-tag
+    permissions:
+      contents: write
     uses: ./.github/workflows/tests.yml
   publish:
     needs: tests

@@ -105,6 +105,11 @@ def test_odd_file_names_survive_the_whole_round_trip(tmp_path, as_repo):
     files = {name: f"content of {i}\n".encode() for i, name in enumerate(dict.fromkeys(ODD_NAMES))}
     project = tmp_path / "r" / "p"
     write(project, files)
+    if sys.platform == "darwin":
+        # Git's default core.precomposeUnicode reports NFC paths on macOS,
+        # including a decomposed filename supplied when creating the fixture.
+        import unicodedata
+        files = {unicodedata.normalize("NFC", name): data for name, data in files.items()}
     if as_repo:
         git(project, "init", "-q", "-b", "main")
         git(project, "add", "-A")
