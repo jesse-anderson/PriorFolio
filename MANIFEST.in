@@ -1,0 +1,6 @@
+include LICENSE *.md pyproject.toml gui.py
+recursive-include .github/workflows *.yml
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include docs *.png
+global-exclude __pycache__ *.py[cod]

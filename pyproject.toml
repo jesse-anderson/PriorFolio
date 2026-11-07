@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "priorfolio"
+version = "0.1.0a1"
+description = "Prepare IP disclosures and preserve the evidence behind them."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{name = "Jesse Anderson"}]
+dependencies = []
+keywords = ["ip-disclosure", "evidence", "backup", "sha256"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/jesse-anderson/PriorFolio"
+Repository = "https://github.com/jesse-anderson/PriorFolio"
+Issues = "https://github.com/jesse-anderson/PriorFolio/issues"
+Documentation = "https://github.com/jesse-anderson/PriorFolio#readme"
+Changelog = "https://github.com/jesse-anderson/PriorFolio/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "build>=1,<2", "twine>=6,<8"]
+
+[project.scripts]
+priorfolio = "priorfolio:main"
+
+[project.gui-scripts]
+priorfolio-gui = "priorfolio_gui:main"
+
+[tool.setuptools]
+py-modules = ["priorfolio", "priorfolio_exports", "priorfolio_gui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
