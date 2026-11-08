@@ -10,8 +10,8 @@ Prepare IP disclosures and preserve the evidence behind them.
 
 ![PriorFolio displaying a synthetic example disclosure](https://raw.githubusercontent.com/jesse-anderson/PriorFolio/main/docs/preview.png)
 
-**Alpha release:** the local workflow is tested on Windows. Cross-platform CI is
-configured; check its results before relying on another platform.
+**Alpha release:** CI exercises the desktop and command-line workflows on
+Windows, Linux, and macOS with Python 3.10, 3.12, and 3.15.
 
 PriorFolio records local projects, lets you describe the work and your
 contribution, and produces a disclosure plus private evidence. It hashes the
@@ -23,7 +23,7 @@ fetches, or writes inside the projects being scanned.
 Requires Python 3.10+ and Git. The desktop interface also requires Tkinter
 (included with the standard Windows Python installer; some Linux installations
 need their distribution's Tk package). Runtime code uses the Python standard
-library. Windows is tested locally; CI is configured for Windows, Linux and macOS.
+library. Windows is also exercised locally using real Tk windows.
 
 From a source checkout, install in a virtual environment and launch:
 
@@ -50,8 +50,9 @@ only for the desktop interface; pip cannot install the system Tk libraries.
 
 The **Desktop builds** workflow creates Windows x64, Linux x64 and macOS arm64
 archives with a windowed **PriorFolio** app and a separate **PriorFolioCLI**.
-Python and Tk are bundled; Git is still installed separately. Download a release
-archive, extract it completely and keep each application folder intact.
+Python and Tk are bundled; Git is still installed separately. Download an archive
+from [GitHub releases](https://github.com/jesse-anderson/PriorFolio/releases),
+extract it completely and keep each application folder intact.
 Initial builds are unsigned and macOS builds are not notarized.
 
 To build locally on the operating system you intend to distribute for:

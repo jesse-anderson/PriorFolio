@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -33,7 +34,7 @@ jobs:
       - if: runner.os == 'Linux' && matrix.python != '3.12'
         run: xvfb-run -a python -m pytest
       - if: runner.os != 'Linux'
-        run: python -m pytest
+        run: python -m pytest -v -o faulthandler_timeout=60
       - run: python -m build
       - run: python -m twine check --strict dist/*
       - run: python scripts/check_dist.py dist
