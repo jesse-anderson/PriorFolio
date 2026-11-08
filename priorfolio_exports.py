@@ -15,31 +15,130 @@ from pathlib import Path
 DETAIL_FIELDS = ("title", "description", "contribution", "period", "references")
 BACKUP_INSTRUCTIONS = """PriorFolio private backup
 
-1. Export a complete private ZIP, including snapshots, using Export backup or
+1. Export a private backup ZIP, including snapshots, using Export backup or
    priorfolio --backup RUN_FOLDER --destination PATH.zip.
-2. Email the ZIP to yourself, or save it to a cloud-sync folder and let the
-   upload finish. Use email.txt as a starting point. If the archive exceeds
-   your mail provider's attachment limit, use private cloud storage.
-3. Check your mailbox's received attachment or your cloud provider's web
-   interface. Download the archive and compare its SHA-256 with the sidecar
-   .sha256 file. Ideally check from another device.
-4. Record that check using Confirm remote backup, or
+   If the run holds files that may contain secrets (.env, keys, credentials),
+   export two copies of the same record: a FULL copy to keep offline, such as
+   on an external drive, and a CLOUD copy that withholds those files
+   (priorfolio --backup RUN_FOLDER --destination CLOUD.zip --withhold-secrets).
+   Both carry the same evidence.json and signed timestamps.
+2. Before any copy leaves this computer, put it in a password-protected 7-Zip
+   archive with encrypted file names. With the 7-Zip program, choose Add to
+   archive, format 7z, encryption AES-256, and tick Encrypt file names; or run
+       7z a -t7z -mhe=on -p PriorFolio-backup.7z PriorFolio-backup.zip
+   Use a long password and keep it in a password manager. Without it the
+   backup cannot be opened. Keep the .sha256 file's hash outside the archive,
+   for example in your email.
+3. Email the .7z to yourself, or save it to a cloud-sync folder and let the
+   upload finish. Use email.txt as a starting point. Some mail providers
+   reject large or password-protected attachments; use private cloud storage
+   instead.
+4. Check your mailbox's received attachment or your cloud provider's web
+   interface. Download the .7z, extract it with your password, and compare the
+   ZIP's SHA-256 with the hash from the .sha256 file. Ideally check from
+   another device.
+5. Record that check using Confirm remote backup, or
    priorfolio --confirm-backup RUN_FOLDER --backup-method email|cloud.
-5. Keep the bundle hash outside the run folder. Periodically test a restore:
+6. Keep the bundle hash outside the run folder. Periodically test a restore:
    unpack your own backup and run priorfolio --verify RESTORED --expect HASH.
+   A cloud copy verifies every file except those listed in WITHHELD.txt.
 
 Exported means written and hashed locally. Confirmed means you explicitly
 reported checking the remote copy; PriorFolio cannot inspect your mail or cloud
 account. An email containing only a hash is not a backup of your files.
 
-The private ZIP is not encrypted. It includes source code, full local paths,
-remote URLs, and potentially credentials from the selected projects. Use an
-account you control with appropriate access restrictions. Review disclosure.md
-or disclosure.zip before sharing a disclosure with anyone else.
+The ZIP itself is not encrypted; the 7-Zip password is what protects it. It
+includes source code, full local paths and remote URLs from the selected
+projects. Withholding is based on file names, so a secret written inside an
+ordinary source file stays in the cloud copy. Review disclosure.md or
+disclosure.zip before sharing a disclosure with anyone else.
 
 evidence_bundle.zip is a smaller, private metadata bundle. It excludes source
 snapshots and is not a complete backup. Verify it with --metadata-only.
 """
+WITHHELD_JSON, WITHHELD_TXT = "WITHHELD.json", "WITHHELD.txt"
+
+
+# File names that commonly hold credentials or private keys.
+SECRET_NAMES = {
+    ".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".htpasswd", ".git-credentials",
+    ".dockercfg", "credentials", "credentials.json", "client_secret.json", "secrets.json",
+    "secrets.yaml", "secrets.yml", "secrets.toml", "token.json", "id_rsa", "id_dsa",
+    "id_ecdsa", "id_ed25519", "terraform.tfstate",
+}
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk",
+                   ".tfstate", ".tfvars")
+TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def looks_secret(relative):
+    name = relative.rsplit("/", 1)[-1].lower()
+    if name.endswith(TEMPLATE_SUFFIXES):
+        return False
+    return name in SECRET_NAMES or name.startswith(".env.") or name.endswith(SECRET_SUFFIXES)
+
+
+def recorded_files(run_dir):
+    """(project name, relative path) for every file in a run's manifests."""
+    import priorfolio as core
+    data = json.loads(core.safe_child(run_dir, "evidence.json").read_text(encoding="utf-8"))
+    files = []
+    for p in data["projects"]:
+        entries = core.read_manifest(core.safe_child(run_dir, p["manifest"]).read_bytes())
+        files += [(p["name"], rel) for rel in sorted(entries)]
+    return files
+
+
+def likely_secrets(run_dir):
+    """'project: path' for each recorded file whose name suggests credentials or keys."""
+    try:
+        return [f"{name}: {rel}" for name, rel in recorded_files(run_dir) if looks_secret(rel)]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []  # export_backup reports a damaged run in its own words
+
+
+def select_withheld(run_dir, patterns=(), secrets=False):
+    """'project: path' entries to leave out of a cloud copy.
+
+    A pattern matches a file's relative path or its name (fnmatch, case
+    sensitive), for example ".env", "*.pem" or "config/secrets/*".
+    secrets=True adds every likely secret.
+    """
+    import fnmatch
+    chosen = []
+    for name, rel in recorded_files(run_dir):
+        base = rel.rsplit("/", 1)[-1]
+        if (secrets and looks_secret(rel)) or any(
+                fnmatch.fnmatchcase(rel, p) or fnmatch.fnmatchcase(base, p) for p in patterns):
+            chosen.append(f"{name}: {rel}")
+    return chosen
+
+
+def withheld_record(run_dir):
+    """The WITHHELD.json record of a cloud copy, or None for a complete run.
+
+    Raises ValueError when the file exists but cannot be used.
+    """
+    import priorfolio as core
+    path = core.safe_child(run_dir, WITHHELD_JSON)
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    files = data.get("files") if isinstance(data, dict) else None
+    if (not isinstance(data, dict) or data.get("format") != "priorfolio-withheld-v1"
+            or not isinstance(data.get("bundle_sha256"), str)
+            or not isinstance(files, list) or not files
+            or not all(isinstance(f, dict) and all(isinstance(f.get(k), str) for k in
+                                                   ("project", "manifest", "path", "sha256"))
+                       for f in files)):
+        raise ValueError(f"{WITHHELD_JSON} is not a PriorFolio withheld-file list")
+    return data
+
+
+def withheld_files(run_dir):
+    """The withheld-file entries of a cloud copy, or [] for a complete run."""
+    record = withheld_record(run_dir)
+    return record["files"] if record else []
 
 
 def utc_now():
@@ -117,6 +216,16 @@ def backup_status(run_dir):
                 data.get("method") not in ("email", "cloud")
                 or not isinstance(data.get("confirmed_utc"), str) or not data["confirmed_utc"]):
             return {"state": "backup_required"}
+        # A cloud copy lists what it withholds, and may name the full copy exported before it.
+        withheld, full = data.get("withheld"), data.get("full_copy")
+        if withheld is not None and not (isinstance(withheld, list) and withheld
+                                         and all(isinstance(w, str) and w for w in withheld)):
+            return {"state": "backup_required"}
+        if full is not None and not (
+                isinstance(full, dict)
+                and all(isinstance(full.get(k), str) and full[k] for k in ("archive", "archive_sha256", "exported_utc"))
+                and re.fullmatch(r"[0-9a-f]{64}", full["archive_sha256"])):
+            return {"state": "backup_required"}
         return data
     except (OSError, ValueError, TypeError):
         return {"state": "backup_required"}
@@ -130,14 +239,54 @@ def save_status(run_dir, status):
     os.replace(temp, target)
 
 
-def export_backup(run_dir, destination):
+def copy_stream(source, target):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: source.read(1 << 20), b""):
+        target.write(chunk)
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_redacted_snapshot(source_path, keep, target_path):
+    """Copy a snapshot zip without withheld files, checking every kept file's hash."""
+    import priorfolio as core
+    seen = set()
+    with zipfile.ZipFile(source_path) as original, \
+            zipfile.ZipFile(target_path, "w", zipfile.ZIP_DEFLATED) as copy:
+        for info in original.infolist():
+            if info.is_dir() or info.filename not in keep:
+                continue
+            entry = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+            entry.compress_type, entry.external_attr = zipfile.ZIP_DEFLATED, info.external_attr
+            with original.open(info) as source, \
+                    copy.open(entry, "w", force_zip64=info.file_size > 0x7FFF0000) as target:
+                if copy_stream(source, target) != keep[info.filename]:
+                    raise core.ToolError(f"Evidence changed during backup: {source_path.name}: {info.filename}")
+            seen.add(info.filename)
+    if seen != set(keep):
+        raise core.ToolError(f"Snapshot {source_path.name} is missing recorded files.")
+
+
+def export_backup(run_dir, destination, withhold=()):
     """Export verified private evidence exclusively; never overwrite a backup.
 
     Stream snapshot bytes into the outer ZIP and check against the recorded
     hashes while copying. Unknown files and local backup receipts stay out.
+
+    withhold lists "project: path" entries (see select_withheld) to leave out
+    of the source snapshots, for a copy stored in the cloud. That copy keeps
+    the same evidence.json, manifests and timestamps, and lists what it
+    withholds in WITHHELD.json and WITHHELD.txt.
     """
+    import tempfile
     import priorfolio as core
     run_dir, destination = Path(run_dir).resolve(), Path(destination).absolute()
+    try:
+        already_redacted = bool(withheld_files(run_dir))
+    except (OSError, ValueError):
+        already_redacted = True
+    if already_redacted:
+        raise core.ToolError("This folder is a cloud copy with withheld files. Export from the original run.")
     problems = core.verify_run(run_dir)
     if problems:
         raise core.ToolError("Evidence verification failed before backup: " + "; ".join(problems[:5]))
@@ -145,14 +294,44 @@ def export_backup(run_dir, destination):
     if any(p["file_count"] and not p.get("snapshot") for p in data["projects"]):
         raise core.ToolError("This run has no complete source snapshots. Generate again with Zip snapshots enabled.")
     bundle = core.sha256_file(core.safe_child(run_dir, "evidence.json"))
+
+    # Resolve what to withhold against the manifests: project -> {path: sha256}.
+    requested, withheld = set(withhold), {}
+    by_project = {p["name"]: p for p in data["projects"]}
+    for item in sorted(requested):
+        name, _, rel = item.partition(": ")
+        project = by_project.get(name)
+        entries = core.read_manifest(core.safe_child(run_dir, project["manifest"]).read_bytes()) if project else {}
+        if rel not in entries:
+            raise core.ToolError(f"Cannot withhold {item}: it is not recorded in this run.")
+        withheld.setdefault(name, {})[rel] = entries[rel]
+
     expected = {"evidence.json": bundle}
     names = {"evidence.json", "BUNDLE_SHA256.txt"}
+    redact = {}  # snapshot path -> files to keep, for projects with withheld files
     for p in data["projects"]:
         names.add(p["manifest"])
         expected[p["manifest"]] = p["content_sha256"] or hashlib.sha256(b"").hexdigest()
         if p.get("snapshot"):
             names.add(p["snapshot"])
-            expected[p["snapshot"]] = p["snapshot_sha256"]
+            if p["name"] in withheld:
+                entries = core.read_manifest(core.safe_child(run_dir, p["manifest"]).read_bytes())
+                redact[p["snapshot"]] = {rel: digest for rel, digest in entries.items()
+                                         if rel not in withheld[p["name"]]}
+            else:
+                expected[p["snapshot"]] = p["snapshot_sha256"]
+    extras = {}
+    if withheld:
+        listed = [{"project": name, "manifest": by_project[name]["manifest"], "path": rel, "sha256": digest}
+                  for name in sorted(withheld) for rel, digest in sorted(withheld[name].items())]
+        extras[WITHHELD_JSON] = (json.dumps({"format": "priorfolio-withheld-v1", "bundle_sha256": bundle,
+                                             "files": listed}, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        extras[WITHHELD_TXT] = ("This is a cloud copy of a PriorFolio run. These files were left out of its\n"
+                                "source snapshots. Their hashes remain in the manifests and evidence.json,\n"
+                                "so the timestamps still cover them, but their contents are only in the\n"
+                                "full copy kept elsewhere.\n\n"
+                                + "".join(f"{f['project']}: {f['path']}  sha256 {f['sha256']}\n" for f in listed)
+                                ).encode("utf-8")
     for name in ("evidence.md", "email.txt", "BACKUP.txt", "disclosure.json", "disclosure.md",
                  "disclosure.zip", "evidence_bundle.zip", "timestamps/timestamps.json"):
         if core.safe_child(run_dir, name).is_file():
@@ -166,24 +345,27 @@ def export_backup(run_dir, destination):
     sidecar = Path(str(destination) + ".sha256")
     if destination.exists() or destination.is_symlink() or sidecar.exists() or sidecar.is_symlink():
         raise core.ToolError("That backup or checksum already exists. Choose a new filename.")
+    previous = backup_status(run_dir)
     created = False
     sidecar_created = False
     try:
-        with destination.open("xb") as output:
+        with tempfile.TemporaryDirectory(prefix="priorfolio-backup-") as work, destination.open("xb") as output:
             created = True
             with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
                 for name, source_path in sorted(sources.items()):
+                    if name in redact:
+                        source_path = Path(work) / "snapshot.zip"
+                        write_redacted_snapshot(sources[name], redact[name], source_path)
                     with source_path.open("rb") as source:
                         # Zip64 headers only where needed: forcing them on every entry
                         # makes Info-ZIP's unzip report errors for non-ASCII names.
                         large = os.fstat(source.fileno()).st_size > 0x7FFF0000
                         with archive.open(name, "w", force_zip64=large) as target:
-                            digest = hashlib.sha256()
-                            for chunk in iter(lambda: source.read(1 << 20), b""):
-                                target.write(chunk)
-                                digest.update(chunk)
-                    if name in expected and digest.hexdigest() != expected[name]:
+                            digest = copy_stream(source, target)
+                    if name in expected and digest != expected[name]:
                         raise core.ToolError("Evidence changed during backup: " + name)
+                for name, content in sorted(extras.items()):
+                    archive.writestr(name, content)
             output.flush()
             os.fsync(output.fileno())
         digest = core.sha256_file(destination)
@@ -192,6 +374,14 @@ def export_backup(run_dir, destination):
             checksum.write(core.manifest_line(digest, destination.name))
         status = {"state": "exported", "exported_utc": utc_now(), "archive": str(destination),
                   "archive_sha256": digest, "bundle_sha256": bundle}
+        if withheld:
+            status["withheld"] = sorted(requested)
+            # Remember the full copy this cloud copy complements.
+            if previous.get("state") in ("exported", "confirmed_by_user"):
+                full = previous.get("full_copy") if previous.get("withheld") else {
+                    key: previous[key] for key in ("archive", "archive_sha256", "exported_utc")}
+                if full:
+                    status["full_copy"] = full
     except BaseException:
         if sidecar_created:
             sidecar.unlink(missing_ok=True)

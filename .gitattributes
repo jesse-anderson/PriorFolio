@@ -1,0 +1,2 @@
+# Recorded evidence and signed timestamp tokens must keep their exact bytes.
+tests/data/** -text

@@ -78,17 +78,25 @@ official [Tcl](https://github.com/tcltk/tcl/blob/core-8-6-13/license.terms) and
 3. Tick the projects to include. Space toggles the focused row. Keep **Zip
    snapshots** enabled to preserve the actual source bytes.
 4. Generate, then review the **Disclosure** tab before sharing `disclosure.zip`.
-5. **Export backup** to create the complete private ZIP. Email it to yourself
-   using the **Backup email** text, or save it to a private cloud-sync folder.
-6. Check the received email attachment or the completed upload through the
-   provider's web interface, ideally from another device. Compare the downloaded
-   ZIP's SHA-256 with its `.sha256` sidecar, then **Confirm remote backup**.
+5. **Export backup** to create the private ZIP. If the run holds files whose
+   names suggest secrets (`.env`, `*.pem`, `id_rsa`, credentials), PriorFolio
+   offers two copies of the same timestamped record: a **full copy** to keep
+   offline, and a **cloud copy** that leaves those files out.
+6. Put the copy you send in a password-protected 7-Zip archive with encrypted
+   file names (format 7z, AES-256, **Encrypt file names**; or
+   `7z a -t7z -mhe=on -p backup.7z backup.zip`). Keep the password in a password
+   manager. Email the `.7z` to yourself using the **Backup email** text, or save
+   it to a private cloud-sync folder.
+7. Check the received email attachment or the completed upload through the
+   provider's web interface, ideally from another device. Extract it, compare
+   the ZIP's SHA-256 with its `.sha256` sidecar, then **Confirm remote backup**.
 
 Saving a local ZIP is not a completed remote backup. PriorFolio distinguishes
 **backup required**, **exported**, and **confirmed by you**. It does not send
 email, upload files, or independently verify delivery. An email containing only
-a hash does not back up the underlying source files. If the ZIP exceeds your
-mail provider's attachment limit, use private cloud storage.
+a hash does not back up the underlying source files. If the archive exceeds
+your mail provider's attachment limit, or the provider rejects password-protected
+attachments, use private cloud storage.
 
 The desktop app remembers the latest run and its pending backup when reopened,
 and remembers earlier runs through **Previous runs**. Confirming a newer backup
@@ -110,15 +118,19 @@ stored privately in `~/.priorfolio/settings.json`. There is no telemetry.
 | `evidence.json`, `evidence.md`, `manifests/` | **Private** local paths, remote identifiers, source file names, hashes and warnings. |
 | `snapshots/` | **Private** ZIPs containing the exact source bytes hashed. |
 | `evidence_bundle.zip` | **Private metadata only**, without snapshots. Not a complete source backup. |
-| Exported backup ZIP | **Private complete evidence**, including snapshots, metadata, disclosure documents, and timestamp responses if requested. |
+| Exported backup ZIP (full copy) | **Private complete evidence**, including snapshots, metadata, disclosure documents, and timestamp responses. Keep offline if it holds secrets. |
+| Exported backup ZIP (cloud copy) | The same record and timestamps, with the files listed in `WITHHELD.txt` left out of the snapshots. Verifies everything except those files. |
 | `email.txt`, `BACKUP.txt` | Email-to-yourself template and backup/restore instructions. |
 | `backup_status.json` | Local export receipt and your remote-copy confirmation; excluded from disclosures and exported backups. |
 
 Disclosure exports omit automatic local paths, remote URLs, file listings,
 and source contents. Anything you type into the disclosure fields is shared
-as entered. The private backup is **not encrypted** and may contain credentials
-from the selected projects. Use storage you control with suitable access
-restrictions. PriorFolio deliberately preserves exact evidence rather than
+as entered. The backup ZIP itself is **not encrypted**; protect it with a 7-Zip
+password before it leaves your computer. A cloud copy withholds files by name
+only, so a secret written inside an ordinary source file stays in it. The
+withheld files' hashes remain in the record, so the timestamps still cover
+them; their contents exist only in the full copy, which is then your only copy
+of those files. Use storage you control with suitable access restrictions. PriorFolio deliberately preserves exact evidence rather than
 silently removing source files.
 
 ## Command line
@@ -127,12 +139,20 @@ silently removing source files.
 priorfolio --root D:\projects --list
 priorfolio --add D:\projects\example --select all
 priorfolio --root D:\projects --select "1,4-7,example-project" --out D:\records
-priorfolio --backup RUN_FOLDER --destination D:\CloudSync\PriorFolio-private.zip
+priorfolio --backup RUN_FOLDER --destination E:\Offline\PriorFolio-full.zip
+priorfolio --backup RUN_FOLDER --destination D:\CloudSync\PriorFolio-cloud.zip --withhold-secrets
 priorfolio --confirm-backup RUN_FOLDER --backup-method cloud
 ```
 
-Snapshots are on by default. `--no-snapshot` creates a hash-only record that
-cannot provide a complete source backup. `--add` alone scans only the supplied
+`--withhold-secrets` leaves out files whose names suggest secrets;
+`--withhold PATTERN` (repeatable) leaves out files whose path or name matches,
+such as `"*.pem"` or `"config/secrets/*"`. Exporting the full copy first lets
+the receipt record both copies.
+
+Snapshots and signed timestamps are on by default. `--no-snapshot` creates a
+hash-only record that cannot provide a complete source backup. `--no-timestamp`
+keeps the run offline. Every new run is read back and verified before it is
+reported as finished. `--add` alone scans only the supplied
 projects. With no roots or individual projects, the CLI scans the current folder.
 Disclosure details can currently be authored through the GUI.
 
@@ -146,8 +166,10 @@ priorfolio --verify RESTORED_FOLDER --expect RECORDED_BUNDLE_SHA256 --against-di
 priorfolio --verify UNPACKED_METADATA_BUNDLE --metadata-only --expect RECORDED_BUNDLE_SHA256
 ```
 
-Full verification requires every recorded snapshot. **Metadata only** explicitly
-skips snapshot checking; it never certifies a complete backup. The GUI exposes
+Full verification requires every recorded snapshot. A cloud copy verifies every
+file it contains and reports the files listed in `WITHHELD.txt` as withheld,
+never as checked. **Metadata only** explicitly skips snapshot checking; it never
+certifies a complete backup. The GUI exposes
 the same option. Project paths are read only when **Compare local projects** or
 `--against-disk` is enabled. Enable that only on a run you created or trust.
 Comparisons report changed/missing files, not newly added files.
@@ -162,25 +184,49 @@ one SHA-256 per file. Manifests follow `sha256sum -c` escaping conventions.
 Line-ending conversions or Unicode filename normalization can change the bytes
 on a new checkout. Keep the snapshots to reproduce the recorded state exactly.
 
-## Timestamp responses
+## Signed timestamps
 
-Timestamp requests are **off by default**. `--timestamp` or **Request timestamps**
-sends the evidence JSON's SHA-256 and a random nonce to DigiCert, Sectigo and
-FreeTSA. No project names or source bytes are sent. The services receive the
-request's network metadata, including the originating IP address.
+The content hash records *what* existed; a signed timestamp records *when*.
+Timestamp requests are **on by default**. Each run sends the SHA-256 of
+`evidence.json` and a random nonce to DigiCert, Sectigo and FreeTSA. No
+project names, file names or source bytes are sent. **Like any web request,
+this reveals your IP address to those services.** Untick **Request timestamps**
+or pass `--no-timestamp` for a fully offline run.
 
-PriorFolio stores the responses and checks basic status/digest consistency.
-It does **not** validate timestamp signatures or certificate trust. Reported
-times are unverified labels, and a successful hash check is not proof of an
-authentic timestamp. Two configured endpoints use HTTP; responses must not be
-trusted without independent signature verification.
+Each response is checked when it arrives and again by every verification:
 
-For external verification with an independently trusted TSA certificate bundle:
+- the response must answer this request (status, hash and nonce);
+- the signed token must contain the SHA-256 of this exact `evidence.json`;
+- its signature must chain to that authority's root certificate, checked at the
+  time inside the token so old runs stay verifiable after certificates expire.
+
+The three root certificates are pinned in PriorFolio rather than taken from the
+operating system. Their SHA-256 fingerprints and sources are listed beside
+`TSA_ROOTS` in `priorfolio.py`. FreeTSA's root is self-signed and trusted as
+its operator publishes it; DigiCert's and Sectigo's chain to roots in common
+trust stores. A response whose signature fails is discarded and reported.
+
+Signature checks use OpenSSL 3, which Git for Windows includes and most Linux
+systems provide. On macOS, install it with Homebrew (`brew install openssl@3`);
+the system LibreSSL cannot check these signatures. Without OpenSSL 3, responses
+are still saved but reported as **signature not checked**, never as verified.
+Two endpoints use plain HTTP, which is safe because the signature, not the
+connection, is what PriorFolio verifies.
+
+To check a response independently, save the certificates from `TSA_ROOTS` as
+`tsa-roots.pem` (or use roots you trust), then:
 
 ```console
 openssl ts -reply -in timestamps/digicert.tsr -text
-openssl ts -verify -data evidence.json -in timestamps/digicert.tsr -CAfile trusted-tsa-ca-bundle.pem
+openssl ts -reply -in timestamps/digicert.tsr -token_out -out token.der
+openssl cms -verify -inform DER -in token.der -binary -CAfile tsa-roots.pem -purpose timestampsign -out tstinfo.der
+openssl sha256 evidence.json
 ```
+
+The first command shows the token's time and its "Message data" hash, which
+must equal the SHA-256 of `evidence.json`. The `cms -verify` command checks the
+signature and certificate chain. OpenSSL's `ts -verify` also works for DigiCert
+and FreeTSA, but rejects Sectigo's tokens because of how they list certificates.
 
 ## Scope and limits
 
@@ -190,6 +236,10 @@ openssl ts -verify -data evidence.json -in timestamps/digicert.tsr -CAfile trust
   folders, caches and virtual environments are skipped when untracked.
 - Symlinks, junctions, nested repositories and submodules are not followed.
   Add nested repositories separately. Every intentional exclusion is noted.
+- A repository's own Git settings can name programs for Git to run, such as a
+  clean filter. When they do, PriorFolio skips `git status` for that project so
+  it never starts them, and says so in the project list. Its files are still
+  hashed; only the uncommitted-change counts are left out.
 - Read failures produce warnings. Review them; a verified incomplete record
   remains incomplete. This is a sequential snapshot, not an atomic filesystem freeze.
 - PriorFolio is not legal advice. Review disclosure wording for your situation.

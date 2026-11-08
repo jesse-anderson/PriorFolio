@@ -33,6 +33,18 @@ def isolated_git(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Timestamps are on by default. Route any accidental request, including from
+    CLI subprocesses, to a closed local port. PRIORFOLIO_NETWORK=1 allows live tests."""
+    if os.environ.get("PRIORFOLIO_NETWORK"):
+        return
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(key, "http://127.0.0.1:9")
+    for key in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def offscreen_windows(monkeypatch):
     """Keep real Tk windows out of the way during local automation."""
     if not os.environ.get("PRIORFOLIO_TEST_OFFSCREEN"):
@@ -121,3 +133,11 @@ def workspace(tmp_path):
     git(inner, "commit", "-q", "-m", "inner")
 
     return root
+
+
+@pytest.fixture
+def unsigned_tokens(monkeypatch):
+    """Hand-made timestamp responses are not really signed. Check them as if
+    OpenSSL were missing: kept, and marked as not checked."""
+    import priorfolio
+    monkeypatch.setattr(priorfolio, "find_openssl", lambda: None)

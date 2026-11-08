@@ -862,7 +862,7 @@ def test_verify_handles_garbage_timestamp_files(good_run, content):
     (stamps / "fake.tsr").write_bytes(content)
     assert sa.verify_run(good_run["out_dir"]) == [
         "timestamps/fake.tsr was not issued for this evidence.json"]
-    assert sa.run_summary(good_run["out_dir"])["timestamps"] == [("fake", None)]
+    assert sa.run_summary(good_run["out_dir"])["timestamps"] == [("fake", None, None)]
 
 
 def test_run_summary_reports_what_the_folder_claims(good_run):
@@ -904,18 +904,18 @@ def stamped_response(request_der, when=b"20261007142901Z"):
     return bytes([0x30, body[1] + len(extra)]) + body[2:] + extra
 
 
-def test_timestamp_time_reaches_the_email_and_the_summary(tmp_path, monkeypatch):
+def test_timestamp_time_reaches_the_email_and_the_summary(unsigned_tokens, tmp_path, monkeypatch):
     write(tmp_path / "r" / "p", {"f.txt": "f\n"})
     monkeypatch.setattr(sa.urllib.request, "urlopen",
                         lambda request, timeout: FakeResponse(stamped_response(request.data)))
     result, _ = only(tmp_path / "r", tmp_path, "p", timestamp=True)
     assert all(t["time"] == "2026-10-07T14:29:01Z" for t in result["timestamps"])
     assert "digicert (2026-10-07T14:29:01Z)" in result["email"]
-    assert sa.run_summary(result["out_dir"])["timestamps"][0] == ("digicert", "2026-10-07T14:29:01Z")
+    assert sa.run_summary(result["out_dir"])["timestamps"][0] == ("digicert", "2026-10-07T14:29:01Z", None)
     assert sa.verify_run(result["out_dir"]) == []
 
 
-def test_one_authority_down_does_not_lose_the_others(tmp_path, monkeypatch):
+def test_one_authority_down_does_not_lose_the_others(unsigned_tokens, tmp_path, monkeypatch):
     write(tmp_path / "r" / "p", {"f.txt": "f\n"})
 
     def flaky(request, timeout):
@@ -930,12 +930,12 @@ def test_one_authority_down_does_not_lose_the_others(tmp_path, monkeypatch):
     outcome = {t["tsa"]: t for t in result["timestamps"]}
     assert [outcome[n]["ok"] for n in ("digicert", "sectigo", "freetsa")] == [False, False, True]
     assert "503" in outcome["digicert"]["error"] and outcome["sectigo"]["error"] == "TimeoutError"
-    assert "collected from: freetsa (2026" in result["email"]
+    assert "(OpenSSL 3 was not found): freetsa (2026" in result["email"]
     assert sorted(p.name for p in (result["out_dir"] / "timestamps").glob("*.tsr")) == ["freetsa.tsr"]
     assert sa.verify_run(result["out_dir"]) == []
 
 
-def test_oversized_timestamp_response_is_not_read_without_limit(tmp_path, monkeypatch):
+def test_oversized_timestamp_response_is_not_read_without_limit(unsigned_tokens, tmp_path, monkeypatch):
     write(tmp_path / "r" / "p", {"f.txt": "f\n"})
     asked = []
 

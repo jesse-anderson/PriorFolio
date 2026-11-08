@@ -50,7 +50,7 @@ desktop = ["pyinstaller>=6.22.3,<7"]
 priorfolio = "priorfolio:main"
 
 [project.gui-scripts]
-priorfolio-gui = "priorfolio_gui:main"
+priorfolio-gui = "priorfolio:gui_main"
 
 [tool.setuptools]
 py-modules = ["priorfolio", "priorfolio_exports", "priorfolio_gui"]

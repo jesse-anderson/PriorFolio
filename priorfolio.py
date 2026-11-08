@@ -117,6 +117,19 @@ def repo_problem(path):
     return None if same else "its .git folder is not a usable repository"
 
 
+# Repository settings that can make the git commands PriorFolio runs start another
+# program. `git status` runs clean filters, and included files can define them.
+RISKY_GIT_CONFIG = r"^(filter\..+\.(clean|process)|include\.path|includeif\..+\.path)$"
+
+
+def risky_git_config(path):
+    """Names of settings in a repository's own config that could run programs."""
+    rc, out, _ = git(path, "config", "--local", "--get-regexp", RISKY_GIT_CONFIG)
+    if rc != 0:  # 1 means none were found
+        return []
+    return sorted({line.split(" ", 1)[0] for line in out.splitlines() if line.strip()})
+
+
 def strip_credentials(url):
     """Keep a useful remote identifier without authentication or query data."""
     if "://" in url:
@@ -220,6 +233,7 @@ def describe(path, root):
         "git_error": None,
         "branch": None, "commit": None, "commit_date": None, "tree": None,
         "remote": None, "modified": 0, "untracked": 0, "unpushed": None,
+        "config_warning": None,
     }
     if not path.is_dir():
         info.update(is_repo=False, state="FOLDER NOT FOUND")
@@ -249,16 +263,22 @@ def describe(path, root):
         if rc == 0 and url:
             info["remote"] = strip_credentials(url)
 
-    rc, status, err = git(path, "status", "--porcelain")
-    if rc != 0:
-        info["git_error"] = first_line(err).removeprefix("fatal: ")
-        info["state"] = f"GIT ERROR: {info['git_error']}"
-        return info
-    status = status.splitlines()
-    info["untracked"] = sum(1 for s in status if s.startswith("??"))
-    info["modified"] = len(status) - info["untracked"]
-
     notes = []
+    risky = risky_git_config(path)
+    if risky:
+        # Do not let a folder we were only asked to read start its own programs.
+        info["config_warning"] = ", ".join(risky)
+        notes.append(f"repo config can run programs ({info['config_warning']}); git status skipped")
+    else:
+        rc, status, err = git(path, "status", "--porcelain")
+        if rc != 0:
+            info["git_error"] = first_line(err).removeprefix("fatal: ")
+            info["state"] = f"GIT ERROR: {info['git_error']}"
+            return info
+        status = status.splitlines()
+        info["untracked"] = sum(1 for s in status if s.startswith("??"))
+        info["modified"] = len(status) - info["untracked"]
+
     if not info["commit"]:
         notes.append("NO COMMITS")
     if info["modified"] or info["untracked"]:
@@ -453,6 +473,9 @@ def hash_project(info, scratch_git_dir, out_dir, stem, snapshot, exclude=None):
     if info["git_error"]:
         warnings.insert(0, f"git could not read this repository ({info['git_error']}); "
                            "no commit recorded, hashed as a plain folder")
+    if info.get("config_warning"):
+        notes.insert(0, f"repository config can run programs ({info['config_warning']}); "
+                        "git status was not run, so uncommitted changes were not counted")
 
     zip_path = out_dir / "snapshots" / f"{stem}.zip"
     archive = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) if snapshot and files else None
@@ -653,10 +676,152 @@ def timestamp_status(resp):
     return int.from_bytes(resp[i:i + n], "big")
 
 
+def der_items(data, start=0, end=None):
+    """(tag, element start, content start, content end) for each DER element in a range."""
+    end = len(data) if end is None else end
+    items, i = [], start
+    while i < end:
+        tag, n, j = data[i], data[i + 1], i + 2
+        if n & 0x80:
+            k = n & 0x7F
+            if not 1 <= k <= 4:
+                raise ValueError("unsupported DER length")
+            n, j = int.from_bytes(data[j:j + k], "big"), j + k
+        if j + n > end:
+            raise ValueError("truncated DER element")
+        items.append((tag, i, j, j + n))
+        i = j + n
+    return items
+
+
+def der_child(data, item, tag, index):
+    """The index-th element inside item, which must carry the given tag."""
+    children = der_items(data, item[2], item[3])
+    if index >= len(children) or children[index][0] != tag:
+        raise ValueError("unexpected timestamp structure")
+    return children[index]
+
+
+SHA256_OID = bytes.fromhex("608648016503040201")
+
+
+def timestamp_token(resp):
+    """The CMS SignedData token and its signed TSTInfo bytes, from a TimeStampResp."""
+    try:
+        outer = der_items(resp)[0]
+        token = der_child(resp, outer, 0x30, 1)
+        token_bytes = resp[token[1]:token[3]]
+        signed_data = der_child(token_bytes, der_child(token_bytes, der_items(token_bytes)[0], 0xA0, 1), 0x30, 0)
+        encapsulated = der_child(token_bytes, signed_data, 0x30, 2)
+        content = der_child(token_bytes, der_child(token_bytes, encapsulated, 0xA0, 1), 0x04, 0)
+    except IndexError:
+        raise ValueError("not a timestamp token") from None
+    return token_bytes, token_bytes[content[2]:content[3]]
+
+
+def parse_tst_info(tst):
+    """The hash algorithm, hash and time recorded in a TSTInfo."""
+    try:
+        info = der_items(tst)[0]
+        imprint = der_child(tst, info, 0x30, 2)
+        algorithm = der_child(tst, der_child(tst, imprint, 0x30, 0), 0x06, 0)
+        hashed = der_child(tst, imprint, 0x04, 1)
+        when = der_child(tst, info, 0x18, 4)
+    except IndexError:
+        raise ValueError("not a timestamp token") from None
+    text = tst[when[2]:when[3]].decode("ascii")
+    m = re.fullmatch(r"(\d{14})(?:\.\d+)?Z", text)
+    if not m:
+        raise ValueError("unreadable timestamp time")
+    stamp = datetime.datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc)
+    return {"sha256": tst[algorithm[2]:algorithm[3]] == SHA256_OID,
+            "digest": tst[hashed[2]:hashed[3]],
+            "time": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), "epoch": int(stamp.timestamp())}
+
+
+_OPENSSL = []
+
+
+def find_openssl():
+    """An OpenSSL executable that can verify CMS signatures against pinned roots, or None."""
+    if not _OPENSSL:
+        _OPENSSL.append(_locate_openssl())
+    return _OPENSSL[0]
+
+
+def _locate_openssl():
+    candidates = [shutil.which("openssl")]
+    git_path = shutil.which("git")
+    if os.name == "nt" and git_path:
+        # Git for Windows includes OpenSSL beside its own tools.
+        for folder in Path(git_path).resolve().parents[:3]:
+            candidates += [folder / "mingw64" / "bin" / "openssl.exe",
+                           folder / "usr" / "bin" / "openssl.exe", folder / "bin" / "openssl.exe"]
+    if sys.platform == "darwin":  # the system LibreSSL cannot verify CMS
+        candidates += ["/opt/homebrew/bin/openssl", "/opt/homebrew/opt/openssl@3/bin/openssl",
+                       "/usr/local/opt/openssl@3/bin/openssl", "/usr/local/bin/openssl"]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        try:
+            probe = subprocess.run([str(candidate), "cms", "-help"], capture_output=True,
+                                   timeout=30, creationflags=flags)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        usage = probe.stdout + probe.stderr
+        if all(option in usage for option in (b"-attime", b"-purpose", b"-no-CApath", b"-no-CAstore")):
+            return str(candidate)
+    return None
+
+
+def check_timestamp_signature(resp, digest):
+    """Check that a timestamp response is signed for this digest by a pinned authority.
+
+    Returns (state, time, detail). state is "verified", "failed", or "unchecked"
+    when no suitable OpenSSL is available. The certificate chain is checked at
+    the time inside the token, so a token stays checkable after its
+    certificates expire. Only the roots in TSA_ROOTS are trusted.
+    """
+    openssl = find_openssl()
+    if not openssl:
+        return "unchecked", None, "OpenSSL 3 was not found, so the signature was not checked"
+    try:
+        token, tst = timestamp_token(resp)
+        info = parse_tst_info(tst)
+    except (ValueError, UnicodeDecodeError) as e:
+        return "failed", None, f"the token is malformed ({e})"
+    if not info["sha256"] or info["digest"] != digest:
+        return "failed", info["time"], "the signed token is for a different evidence.json"
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    with tempfile.TemporaryDirectory(prefix="priorfolio-tsa-") as folder:
+        folder = Path(folder)
+        (folder / "token.der").write_bytes(token)
+        (folder / "roots.pem").write_text(TSA_ROOTS, encoding="ascii", newline="\n")
+        try:
+            done = subprocess.run(
+                [openssl, "cms", "-verify", "-inform", "DER", "-in", str(folder / "token.der"),
+                 "-binary", "-CAfile", str(folder / "roots.pem"), "-no-CApath", "-no-CAstore",
+                 "-purpose", "timestampsign", "-attime", str(info["epoch"]),
+                 "-out", str(folder / "signed.der")],
+                capture_output=True, timeout=60, creationflags=flags)
+        except (OSError, subprocess.SubprocessError) as e:
+            return "unchecked", info["time"], f"OpenSSL could not be run ({e})"
+        signed = (folder / "signed.der").read_bytes() if done.returncode == 0 else None
+    if done.returncode != 0:
+        errors = [line for line in done.stderr.decode("utf-8", "replace").splitlines()
+                  if "error" in line.lower()]
+        detail = errors[-1].rsplit(":", 1)[-1].strip() if errors else "verification failed"
+        return "failed", info["time"], f"the signature does not verify ({detail})"
+    if signed != tst:
+        return "failed", info["time"], "the verified content differs from the token"
+    return "verified", info["time"], "signed by a pinned timestamp authority"
+
+
 def timestamp_time(resp):
     """The time the authority put in its response, as ISO 8601 UTC, or None.
 
-    Read without checking the signature, so it is only a label.
+    Read without checking the signature; check_timestamp_signature checks it.
     """
     m = re.search(rb"\x18[\x0f-\x17](\d{14})(?:\.\d+)?Z", resp)
     if not m:
@@ -687,9 +852,14 @@ def timestamp_bundle(json_path, out_dir, log):
                 raise ValueError(f"request rejected (status {status})")
             if digest not in resp or nonce not in resp:
                 raise ValueError("response does not match the request")
+            state, signed_time, detail = check_timestamp_signature(resp, digest)
+            if state == "failed":
+                raise ValueError(detail)
             (ts_dir / f"{name}.tsq").write_bytes(query)
             (ts_dir / f"{name}.tsr").write_bytes(resp)
-            outcome.update(ok=True, file=f"timestamps/{name}.tsr", time=timestamp_time(resp))
+            outcome.update(ok=True, file=f"timestamps/{name}.tsr",
+                           time=signed_time or timestamp_time(resp),
+                           signature_verified=state == "verified", signature=detail)
         except Exception as e:  # network, HTTP or parse failure: record and move on
             outcome["error"] = str(e) or type(e).__name__
             log(f"  {name} failed: {outcome['error']}")
@@ -704,7 +874,8 @@ def build_email(results, meta, bundle, timestamps, snapshot):
     lines = [
         f"Subject: Record of pre-existing software - {date} - SHA-256 {bundle[:16]}",
         "To: [your personal address]",
-        "Attach: the private evidence ZIP saved with Export backup",
+        "Attach: the password-protected .7z of the backup ZIP saved with Export backup",
+        "        (the cloud copy, if the run holds secrets; see BACKUP.txt)",
         "",
         f"This is my private backup of the work recorded on {date} (UTC).",
         "The attachment contains source snapshots and private project metadata.",
@@ -736,15 +907,19 @@ def build_email(results, meta, bundle, timestamps, snapshot):
         "path. The manifests are in the attachment, and evidence.json records",
         "every value above, so the single hash at the top covers all of them.",
     ]
-    granted = [t for t in timestamps if t["ok"]]
-    if granted:
-        lines += [
-            "",
-            "Unverified timestamp responses were collected from: "
-            + ", ".join(f"{t['tsa']} ({t['time']})" if t.get("time") else t["tsa"]
-                        for t in granted) + ".",
-            "The responses are in timestamps/. Their signatures have NOT been verified.",
-        ]
+    def described(stamps):
+        return ", ".join(f"{t['tsa']} ({t['time']})" if t.get("time") else t["tsa"] for t in stamps)
+
+    verified = [t for t in timestamps if t["ok"] and t.get("signature_verified")]
+    unchecked = [t for t in timestamps if t["ok"] and not t.get("signature_verified")]
+    if verified:
+        lines += ["", "Signed timestamps of the hash above, each verified against the "
+                      "authority's root certificate: " + described(verified) + "."]
+    if unchecked:
+        lines += ["", "Timestamp responses whose signatures could NOT be checked "
+                      "(OpenSSL 3 was not found): " + described(unchecked) + "."]
+    if verified or unchecked:
+        lines.append("The responses are in timestamps/. Re-check them with priorfolio --verify.")
     if snapshot:
         lines += [
             "",
@@ -846,6 +1021,10 @@ def _generate(chosen, out_base, out_dir, now, snapshot, timestamp, log):
     from priorfolio_exports import write_disclosure, write_backup_instructions
     disclosure = write_disclosure(out_dir, results, meta, bundle)
     write_backup_instructions(out_dir)
+    # Round trip: read back everything just written, as a later verification would.
+    problems = verify_run(out_dir)
+    if problems:
+        raise ToolError("The new run did not pass its own verification: " + "; ".join(problems[:5]))
     return {
         "out_dir": out_dir, "bundle": bundle, "results": results,
         "timestamps": timestamps, "email": email,
@@ -882,7 +1061,9 @@ def verify_run(run_dir, against_disk=False, expect_bundle=None, metadata_only=Fa
     rewrite BUNDLE_SHA256.txt too. Pass expect_bundle, the hash from your email
     or signed agreement, to tie it to something outside the folder.
 
-    Timestamp signatures are not validated here: use `openssl ts -verify`.
+    Timestamp signatures are checked against the pinned authority roots when
+    OpenSSL 3 is available; without it they are reported by run_summary as
+    unchecked rather than counted as problems.
     """
     run_dir = Path(run_dir).resolve()
     try:
@@ -906,9 +1087,26 @@ def verify_run(run_dir, against_disk=False, expect_bundle=None, metadata_only=Fa
         problems.append(f"evidence.json hashes to {bundle}, not the expected "
                         f"{expect_bundle.strip().lower()}")
 
+    # A cloud copy leaves some files out of its snapshots and lists them.
+    withheld = {}
+    try:
+        from priorfolio_exports import withheld_record
+        record = withheld_record(run_dir)
+        if record:
+            if record["bundle_sha256"] != bundle:
+                problems.append("WITHHELD.json belongs to a different evidence.json")
+            for f in record["files"]:
+                withheld.setdefault(f["manifest"], {})[f["path"]] = f["sha256"]
+            known = {p.get("manifest") for p in projects if isinstance(p, dict)}
+            problems += [f"WITHHELD.json names a manifest outside this run: {m}"
+                         for m in sorted(set(withheld) - known)]
+    except (OSError, ValueError) as e:
+        problems.append(f"WITHHELD.json is unreadable: {e}")
+
     for index, p in enumerate(projects, 1):
         try:
-            problems += _verify_project(run_dir, p, against_disk, metadata_only)
+            problems += _verify_project(run_dir, p, against_disk, metadata_only,
+                                        withheld.get(p.get("manifest") if isinstance(p, dict) else None, {}))
         except (KeyError, TypeError, AttributeError, ValueError) as e:
             name = p.get("name") if isinstance(p, dict) else None
             problems.append(f"{name or 'project ' + str(index)}: entry in evidence.json "
@@ -926,13 +1124,18 @@ def verify_run(run_dir, against_disk=False, expect_bundle=None, metadata_only=Fa
                 granted = False
             if not granted:
                 problems.append(f"timestamps/{tsr.name} was not issued for this evidence.json")
+                continue
+            state, _, detail = check_timestamp_signature(resp, bytes.fromhex(bundle))
+            if state == "failed":
+                problems.append(f"timestamps/{tsr.name}: {detail}")
     except (OSError, ValueError) as e:
         problems.append(f"timestamps are unreadable: {e}")
     return problems
 
 
-def _verify_project(run_dir, p, against_disk, metadata_only=False):
-    name, problems = p["name"], []
+def _verify_project(run_dir, p, against_disk, metadata_only=False, withheld=None):
+    """Problems with one project. withheld maps paths a cloud copy left out to their hashes."""
+    name, problems, withheld = p["name"], [], withheld or {}
     try:
         raw = safe_child(run_dir, p["manifest"]).read_bytes()
     except OSError:
@@ -943,12 +1146,16 @@ def _verify_project(run_dir, p, against_disk, metadata_only=False):
     for rel in entries:
         # Validate names even when not comparing to live projects.
         safe_child(run_dir, rel)
+    problems += [f"{name}: withheld file {rel} does not match the manifest"
+                 for rel, digest in sorted(withheld.items()) if entries.get(rel) != digest]
 
     if p.get("snapshot"):
         zip_path = safe_child(run_dir, p["snapshot"])
     if p.get("snapshot") and not metadata_only:
         try:
-            if sha256_file(zip_path) != p["snapshot_sha256"]:
+            # A redacted snapshot differs from the original zip, but every
+            # file it keeps must still match the manifest exactly.
+            if not withheld and sha256_file(zip_path) != p["snapshot_sha256"]:
                 problems.append(f"{name}: snapshot zip does not match its recorded hash")
             with zipfile.ZipFile(zip_path) as z:
                 members = [i for i in z.infolist() if not i.is_dir()]
@@ -959,7 +1166,8 @@ def _verify_project(run_dir, p, against_disk, metadata_only=False):
                         inside[member.filename] = hash_stream(source)
             if len(inside) != len(members):
                 problems.append(f"{name}: snapshot zip holds the same file name more than once")
-            problems += [f"{name}: snapshot {m}" for m in compare_hashes(entries, inside)]
+            kept = {rel: digest for rel, digest in entries.items() if rel not in withheld}
+            problems += [f"{name}: snapshot {m}" for m in compare_hashes(kept, inside)]
         except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
                 NotImplementedError, EOFError) as e:
             problems.append(f"{name}: snapshot zip is unreadable: {e}")
@@ -976,8 +1184,12 @@ def _verify_project(run_dir, p, against_disk, metadata_only=False):
     return problems
 
 
-def run_summary(run_dir):
-    """What a run folder claims: its hash, date, project count and timestamps."""
+def run_summary(run_dir, signatures=False):
+    """What a run folder claims: its hash, date, project count and timestamps.
+
+    Each timestamp is (authority, time, signature state). The state is None
+    unless signatures=True, which runs the OpenSSL check for every response.
+    """
     run_dir = Path(run_dir).resolve()
     try:
         json_path = safe_child(run_dir, "evidence.json")
@@ -985,21 +1197,31 @@ def run_summary(run_dir):
         count = len(data["projects"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    bundle = sha256_file(json_path)
     stamps = []
     try:
         for tsr in sorted(safe_child(run_dir, "timestamps").glob("*.tsr")):
             with safe_child(run_dir, tsr.relative_to(run_dir).as_posix()).open("rb") as source:
-                stamps.append((tsr.stem, timestamp_time(source.read(TSA_MAX_RESPONSE))))
+                resp = source.read(TSA_MAX_RESPONSE)
+            state, signed_time = None, None
+            if signatures:
+                state, signed_time, _ = check_timestamp_signature(resp, bytes.fromhex(bundle))
+            stamps.append((tsr.stem, signed_time if state == "verified" else timestamp_time(resp), state))
     except (OSError, ValueError):
         pass  # verify_run reports unsafe or damaged timestamp paths.
-    return {"bundle": sha256_file(json_path), "generated_utc": data.get("generated_utc"),
+    return {"bundle": bundle, "generated_utc": data.get("generated_utc"),
             "projects": count, "timestamps": stamps}
 
 
-def main():
-    for stream in (sys.stdout, sys.stderr):  # project names may not fit the console's encoding
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="backslashreplace")
+SIGNATURE_LABELS = {"verified": "signature verified", "failed": "SIGNATURE DOES NOT VERIFY",
+                    "unchecked": "signature not checked: OpenSSL 3 not found", None: "signature not checked"}
+
+
+TIMESTAMP_NOTICE = ("Timestamps: the SHA-256 of evidence.json is sent to " + ", ".join(n for n, _ in TSAS)
+                    + ". Like any web request, this reveals your IP address to those services.")
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--version", action="version", version=f"PriorFolio {VERSION}")
     mode = ap.add_mutually_exclusive_group()
@@ -1016,9 +1238,11 @@ def main():
                     default=True, help="save source snapshots (default)")
     ap.add_argument("--no-snapshot", action="store_false", dest="snapshot",
                     help="hash only; this run cannot provide a complete source backup")
-    ap.add_argument("--timestamp", action="store_true",
-                    help="collect unverified timestamp responses (sends one hash "
-                         "to " + ", ".join(n for n, _ in TSAS) + ")")
+    ap.add_argument("--timestamp", action="store_true", default=True,
+                    help="request signed timestamps (default): sends the evidence hash, and "
+                         "reveals your IP address, to " + ", ".join(n for n, _ in TSAS))
+    ap.add_argument("--no-timestamp", action="store_false", dest="timestamp",
+                    help="make the run entirely offline, without timestamps")
     mode.add_argument("--verify", type=Path, metavar="RUN_FOLDER",
                     help="re-check an earlier run folder instead of making a new one")
     ap.add_argument("--against-disk", action="store_true",
@@ -1032,14 +1256,30 @@ def main():
     mode.add_argument("--backup", type=Path, metavar="RUN_FOLDER",
                       help="export a complete private backup ZIP")
     ap.add_argument("--destination", type=Path, help="new ZIP path, e.g. in a cloud-sync folder")
+    ap.add_argument("--withhold-secrets", action="store_true",
+                    help="with --backup: make a cloud copy that leaves out files whose names "
+                         "suggest secrets (.env, keys, credentials); keep a full copy offline")
+    ap.add_argument("--withhold", action="append", default=[], metavar="PATTERN",
+                    help="with --backup: also leave out files whose path or name matches "
+                         'PATTERN, e.g. "*.pem" or "config/secrets/*" (repeatable)')
     mode.add_argument("--confirm-backup", type=Path, metavar="RUN_FOLDER",
                       help="record that you checked the received email or uploaded cloud copy")
     ap.add_argument("--backup-method", choices=("email", "cloud"))
+    return ap
+
+
+def main():
+    for stream in (sys.stdout, sys.stderr):  # project names may not fit the console's encoding
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
+    ap = build_parser()
     args = ap.parse_args()
     if (args.metadata_only or args.against_disk or args.expect) and not args.verify:
         ap.error("--metadata-only, --against-disk and --expect require --verify")
     if bool(args.backup) != bool(args.destination):
         ap.error("--backup and --destination must be used together")
+    if (args.withhold or args.withhold_secrets) and not args.backup:
+        ap.error("--withhold and --withhold-secrets require --backup")
     if bool(args.confirm_backup) != bool(args.backup_method):
         ap.error("--confirm-backup and --backup-method must be used together")
 
@@ -1051,42 +1291,94 @@ def main():
         sys.exit(f"error: {e}")
 
 
+def open_gui():
+    """Open the desktop interface, with a plain message when Tkinter is missing."""
+    try:
+        from priorfolio_gui import main as start
+    except ImportError as e:
+        if (e.name or "").split(".")[0] not in ("tkinter", "_tkinter"):
+            raise
+        raise ToolError("The desktop interface needs Tkinter, which this Python installation "
+                        "does not include. Install your system's Tk package (for example "
+                        "python3-tk), or use the command-line options shown by priorfolio --help.") from None
+    start()
+
+
+def gui_main():
+    """Entry point of the installed priorfolio-gui launcher."""
+    try:
+        open_gui()
+    except ToolError as e:
+        sys.exit(str(e))
+
+
 def run_cli(args):
     if args.gui:
-        try:
-            from priorfolio_gui import main as gui_main
-        except ImportError as e:
-            if (e.name or "").split(".")[0] not in ("tkinter", "_tkinter"):
-                raise
-            raise ToolError("The desktop interface needs Tkinter, which this Python installation "
-                            "does not include. Install your system's Tk package (for example "
-                            "python3-tk), or use the command-line options shown by --help.") from None
-        gui_main()
+        open_gui()
         return
     if args.backup or args.confirm_backup:
-        from priorfolio_exports import export_backup, confirm_backup
+        from priorfolio_exports import export_backup, confirm_backup, likely_secrets, select_withheld
+
+        def listed(items):
+            for item in items[:20]:
+                print("  " + item, file=sys.stderr)
+            if len(items) > 20:
+                print(f"  ... and {len(items) - 20} more", file=sys.stderr)
+
         if args.backup:
-            status = export_backup(args.backup, args.destination)
+            withhold = []
+            if args.withhold or args.withhold_secrets:
+                try:
+                    withhold = select_withheld(args.backup, args.withhold, args.withhold_secrets)
+                except (OSError, ValueError, KeyError, TypeError):
+                    raise ToolError(f"{args.backup} has no readable PriorFolio evidence record.") from None
+                if not withhold:
+                    raise ToolError("No recorded files match the files to withhold; nothing was exported.")
+                print(f"Cloud copy: withholding {len(withhold)} file(s):", file=sys.stderr)
+                listed(withhold)
+            else:
+                secrets = likely_secrets(args.backup)
+                if secrets:
+                    print(f"WARNING: {len(secrets)} file(s) that may hold secrets will be in this "
+                          "full backup:", file=sys.stderr)
+                    listed(secrets)
+                    print("Keep this full copy offline. For a cloud copy without them, export again "
+                          "with --withhold-secrets.", file=sys.stderr)
+            status = export_backup(args.backup, args.destination, withhold)
             print(f"Exported: {status['archive']}\nArchive SHA-256: {status['archive_sha256']}")
-            print("Remote backup pending: email this ZIP to yourself or let the cloud upload finish.")
+            print("Before it leaves this computer, put it in a password-protected 7-Zip archive "
+                  "with encrypted file names (see BACKUP.txt).")
+            print("Remote backup pending: email the .7z to yourself or let the cloud upload finish.")
             print("Check the received/uploaded copy, then record it with --confirm-backup.")
         else:
             confirm_backup(args.confirm_backup, args.backup_method)
             print("Remote backup check recorded as confirmed by you; delivery was not verified automatically.")
         return
     if args.verify:
-        summary = run_summary(args.verify)
+        summary = run_summary(args.verify, signatures=True)
         if summary:
             print(f"Bundle SHA-256: {summary['bundle']}")
             print(f"Generated (UTC): {summary['generated_utc']}, {summary['projects']} project(s)")
-            for name, when in summary["timestamps"]:
-                print(f"Timestamp {name}: {when or 'time not readable'} (signature not checked)")
+            for name, when, state in summary["timestamps"]:
+                print(f"Timestamp {name}: {when or 'time not readable'} ({SIGNATURE_LABELS[state]})")
         problems = verify_run(args.verify, args.against_disk, args.expect, args.metadata_only)
         for problem in problems:
             print(problem)
+        try:
+            from priorfolio_exports import withheld_files
+            withheld = withheld_files(args.verify)
+        except (OSError, ValueError):
+            withheld = []  # verify_run reports it
         scope = "metadata only; source snapshots not checked" if args.metadata_only else "evidence hashes"
+        if withheld and not args.metadata_only:
+            scope += f" except {len(withheld)} withheld file(s)"
         print(f"{len(problems)} problem(s) found." if problems else f"OK: {scope} match.")
-        print("Timestamp signatures are not checked by PriorFolio.")
+        if withheld:
+            print(f"This is a cloud copy. {len(withheld)} file(s) were left out of its snapshots "
+                  "(see WITHHELD.txt). Their hashes are still in evidence.json, but their contents "
+                  "can only be checked with the full copy:")
+            for f in withheld:
+                print(f"  {f['project']}: {f['path']}")
         if summary and not args.expect:
             print("Compare the bundle hash above with the one in your email or agreement, "
                   "or pass it with --expect.")
@@ -1119,12 +1411,19 @@ def run_cli(args):
     if not chosen:
         raise ToolError("nothing selected")
 
+    if args.timestamp:
+        print(TIMESTAMP_NOTICE + " Use --no-timestamp to skip.", file=sys.stderr)
     run = generate(chosen, args.out, args.snapshot, args.timestamp,
                    log=lambda m: print(m, file=sys.stderr))
     print(f"\nWrote {run['out_dir']}")
     print(f"Bundle SHA-256 (evidence.json): {run['bundle']}")
+    print("Self-check: the new run was read back and verifies.")
     for t in run["timestamps"]:
-        outcome = f"collected; signature NOT verified; reported time {t.get('time') or 'unknown'}" if t["ok"] else "FAILED - " + t["error"]
+        if not t["ok"]:
+            outcome = "FAILED - " + t["error"]
+        else:
+            state = "verified" if t.get("signature_verified") else "unchecked"
+            outcome = f"{t.get('time') or 'time unknown'} ({SIGNATURE_LABELS[state]})"
         print(f"Timestamp {t['tsa']}: {outcome}")
     if run["warnings"]:
         print(f"\n{len(run['warnings'])} WARNING(S): some content may be missing from the hashes")
@@ -1133,6 +1432,128 @@ def run_cli(args):
     print("Review disclosure.md before sharing. Private backup: REQUIRED.")
     print("Export the complete ZIP with --backup and --destination, then email it to yourself or upload it.")
     print("email.txt and BACKUP.txt explain the remote backup check.")
+
+
+# Root certificates of the timestamp authorities in TSAS, pinned so verification
+# does not depend on the operating system's trust store. SHA-256 fingerprints:
+#   DigiCert Trusted Root G4               552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988
+#     cacerts.digicert.com; identical to the copy in the Windows root store.
+#   Sectigo Public Time Stamping Root R46  4941b001b8a97e961b7817c9d9e960ec4b056bfc915a8c1aabf6ef6b3ac046a5
+#     crt.sectigo.com; its key is cross-signed by USERTrust RSA Certification Authority.
+#   Free TSA Root CA                       a6379e7cecc05faa3cbf076013d745e327bbbaa38c0b9af22469d4701d18aabc
+#     freetsa.org over HTTPS; self-signed, so trusted as published by its operator.
+# Each key matches the root key in the chain the authority returns with its tokens.
+TSA_ROOTS = """\
+-----BEGIN CERTIFICATE-----
+MIIFkDCCA3igAwIBAgIQBZsbV56OITLiOQe9p3d1XDANBgkqhkiG9w0BAQwFADBi
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+d3cuZGlnaWNlcnQuY29tMSEwHwYDVQQDExhEaWdpQ2VydCBUcnVzdGVkIFJvb3Qg
+RzQwHhcNMTMwODAxMTIwMDAwWhcNMzgwMTE1MTIwMDAwWjBiMQswCQYDVQQGEwJV
+UzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQu
+Y29tMSEwHwYDVQQDExhEaWdpQ2VydCBUcnVzdGVkIFJvb3QgRzQwggIiMA0GCSqG
+SIb3DQEBAQUAA4ICDwAwggIKAoICAQC/5pBzaN675F1KPDAiMGkz7MKnJS7JIT3y
+ithZwuEppz1Yq3aaza57G4QNxDAf8xukOBbrVsaXbR2rsnnyyhHS5F/WBTxSD1If
+xp4VpX6+n6lXFllVcq9ok3DCsrp1mWpzMpTREEQQLt+C8weE5nQ7bXHiLQwb7iDV
+ySAdYyktzuxeTsiT+CFhmzTrBcZe7FsavOvJz82sNEBfsXpm7nfISKhmV1efVFiO
+DCu3T6cw2Vbuyntd463JT17lNecxy9qTXtyOj4DatpGYQJB5w3jHtrHEtWoYOAMQ
+jdjUN6QuBX2I9YI+EJFwq1WCQTLX2wRzKm6RAXwhTNS8rhsDdV14Ztk6MUSaM0C/
+CNdaSaTC5qmgZ92kJ7yhTzm1EVgX9yRcRo9k98FpiHaYdj1ZXUJ2h4mXaXpI8OCi
+EhtmmnTK3kse5w5jrubU75KSOp493ADkRSWJtppEGSt+wJS00mFt6zPZxd9LBADM
+fRyVw4/3IbKyEbe7f/LVjHAsQWCqsWMYRJUadmJ+9oCw++hkpjPRiQfhvbfmQ6QY
+uKZ3AeEPlAwhHbJUKSWJbOUOUlFHdL4mrLZBdd56rF+NP8m800ERElvlEFDrMcXK
+chYiCd98THU/Y+whX8QgUWtvsauGi0/C1kVfnSD8oR7FwI+isX4KJpn15GkvmB0t
+9dmpsh3lGwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIB
+hjAdBgNVHQ4EFgQU7NfjgtJxXWRM3y5nP+e6mK4cD08wDQYJKoZIhvcNAQEMBQAD
+ggIBALth2X2pbL4XxJEbw6GiAI3jZGgPVs93rnD5/ZpKmbnJeFwMDF/k5hQpVgs2
+SV1EY+CtnJYYZhsjDT156W1r1lT40jzBQ0CuHVD1UvyQO7uYmWlrx8GnqGikJ9yd
++SeuMIW59mdNOj6PWTkiU0TryF0Dyu1Qen1iIQqAyHNm0aAFYF/opbSnr6j3bTWc
+fFqK1qI4mfN4i/RN0iAL3gTujJtHgXINwBQy7zBZLq7gcfJW5GqXb5JQbZaNaHqa
+sjYUegbyJLkJEVDXCLG4iXqEI2FCKeWjzaIgQdfRnGTZ6iahixTXTBmyUEFxPT9N
+cCOGDErcgdLMMpSEDQgJlxxPwO5rIHQw0uA5NBCFIRUBCOhVMt5xSdkoF1BN5r5N
+0XWs0Mr7QbhDparTwwVETyw2m+L64kW4I1NsBm9nVX9GtUw/bihaeSbSpKhil9Ie
+4u1Ki7wb/UdKDd9nZn6yW0HQO+T0O/QEY+nvwlQAUaCKKsnOeMzV6ocEGLPOr0mI
+r/OSmbaz5mEP0oUA51Aa5BuVnRmhuZyxm7EAHu/QD09CbMkKvO5D+jpxpchNJqU1
+/YldvIViHTLSoCtU7ZpXwdv6EM8Zt4tKG48BtieVU+i2iW1bvGjUI+iLUaJW+fCm
+gKDWHrO8Dw9TdSmq6hN35N6MgSGtBxBHEa2HPQfRdbzP82Z+
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIFejCCA2KgAwIBAgIQeD0FbPqDLn5p+FYidp8CuTANBgkqhkiG9w0BAQwFADBX
+MQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMS4wLAYDVQQD
+EyVTZWN0aWdvIFB1YmxpYyBUaW1lIFN0YW1waW5nIFJvb3QgUjQ2MB4XDTIxMDMy
+MjAwMDAwMFoXDTQ2MDMyMTIzNTk1OVowVzELMAkGA1UEBhMCR0IxGDAWBgNVBAoT
+D1NlY3RpZ28gTGltaXRlZDEuMCwGA1UEAxMlU2VjdGlnbyBQdWJsaWMgVGltZSBT
+dGFtcGluZyBSb290IFI0NjCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIB
+AIid2LlFZ50d3ei5JoGaVFTAfEkFm8xaFQ/ZlBBEtEFAgXcUmanU5HYsyAhTXiDQ
+kiUvpVdYqZ1uYoZEMgtHES1l1Cc6HaqZzEbOOp6YiTx63ywTon434aXVydmhx7Dx
+4IBrAou7hNGsKioIBPy5GMN7KmgYmuu4f92sKKjbxqohUSfjk1mJlAjthgF7Hjx4
+vvyVDQGsd5KarLW5d73E3ThobSkob2SL48LpUR/O627pDchxll+bTSv1gASn/hp6
+IuHJorEu6EopoB1CNFp/+HpTXeNARXUmdRMKbnXWflq+/g36NJXB35ZvxQw6zid6
+1qmrlD/IbKJA6COw/8lFSPQwBP1ityZdwuCysCKZ9ZjczMqbUcLFyq6KdOpuzVDR
+3ZUwxDKL1wCAxgL2Mpz7eZbrb/JWXiOcNzDpQsmwGQ6Stw8tTCqPumhLRPb7YkzM
+8/6NnWH3T9ClmcGSF22LEyJYNWCHrQqYubNeKolzqUbCqhSqmr/UdUeb49zYHr7A
+LL8bAJyPDmubNqMtuaobKASBqP84uhqcRY/pjnYd+V5/dcu9ieERjiRKKsxCG1t6
+tG9oj7liwPddXEcYGOUiWLm742st50jGwTzxbMpepmOP1mLnJskvZaN5e45NuzAH
+teORlsSuDt5t4BBRCJL+5EZnnw0ezntk9R8QJyAkL6/bAgMBAAGjQjBAMB0GA1Ud
+DgQWBBT2d2rdP/0BE/8WoWyCAi/QCj0UJTAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0T
+AQH/BAUwAwEB/zANBgkqhkiG9w0BAQwFAAOCAgEACv68sZqZvmHk7JoU7AfTEZ7b
+X45u40OrLX/6vzHQAwDg1TB00bWbiwj+7+we60BP8AMsw1h5NCXWxeyvrEVC54Mi
+rwVrcF6SFGjRwRoelRuiaZ5FDO4oWhaePjZx3/jkQ7j653CA5WscYqlneLXBEZiY
+o6rRNqnsZHZTQ606mlkNpsy3TFMADv5whZmilVEZ83OvydfH2DNL3FTkpZG7+lHS
+1DFHMSUB5UtSSeSRg2UWTXwU5oObGjFk/35fC/dlF+nJIXdqsw0TZSS86bi5GRCJ
+VjqjnkpZ0Jut7ucEv4PNOIU8ijkMRj17QPjHMtdy+WxBDDSdas/UFTVB/GF+Fofn
+OD3iZ4tXxFjPU3EWRcMWx8fcGyzlBfcjeoPNbNC7wfyV9Qkzfk2Bd48jGxG7OThY
+Wolc56vmBHqDEfguDwYc9AeWirMVRDi+WYlsktzAEObiFoPqs+LWU5q7+Q1+nEcs
+tNuDIedeBRcHmtjL2hV3luuEWwDSnRhSjhPLPXzqpJ1rG3r4yqm1NjKg5A5QO9Az
+veHqRQldluTSKuu96oPEPusL2oF+4MxkJ+SQMGFWTw/PNCblUN8GXeL5+mR20diP
+5LiJMq8U3IpM/0Q7OFFQ+lXuYFIuDvUprWBPsp5La2WhL2+iLVVXItSl7up5yQqX
+XftzTXTX48FRiJ6PA9o=
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIH/zCCBeegAwIBAgIJAMHphhYNqOmAMA0GCSqGSIb3DQEBDQUAMIGVMREwDwYD
+VQQKEwhGcmVlIFRTQTEQMA4GA1UECxMHUm9vdCBDQTEYMBYGA1UEAxMPd3d3LmZy
+ZWV0c2Eub3JnMSIwIAYJKoZIhvcNAQkBFhNidXNpbGV6YXNAZ21haWwuY29tMRIw
+EAYDVQQHEwlXdWVyemJ1cmcxDzANBgNVBAgTBkJheWVybjELMAkGA1UEBhMCREUw
+HhcNMTYwMzEzMDE1MjEzWhcNNDEwMzA3MDE1MjEzWjCBlTERMA8GA1UEChMIRnJl
+ZSBUU0ExEDAOBgNVBAsTB1Jvb3QgQ0ExGDAWBgNVBAMTD3d3dy5mcmVldHNhLm9y
+ZzEiMCAGCSqGSIb3DQEJARYTYnVzaWxlemFzQGdtYWlsLmNvbTESMBAGA1UEBxMJ
+V3VlcnpidXJnMQ8wDQYDVQQIEwZCYXllcm4xCzAJBgNVBAYTAkRFMIICIjANBgkq
+hkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtgKODjAy8REQ2WTNqUudAnjhlCrpE6ql
+mQfNppeTmVvZrH4zutn+NwTaHAGpjSGv4/WRpZ1wZ3BRZ5mPUBZyLgq0YrIfQ5Fx
+0s/MRZPzc1r3lKWrMR9sAQx4mN4z11xFEO529L0dFJjPF9MD8Gpd2feWzGyptlel
+b+PqT+++fOa2oY0+NaMM7l/xcNHPOaMz0/2olk0i22hbKeVhvokPCqhFhzsuhKsm
+q4Of/o+t6dI7sx5h0nPMm4gGSRhfq+z6BTRgCrqQG2FOLoVFgt6iIm/BnNffUr7V
+DYd3zZmIwFOj/H3DKHoGik/xK3E82YA2ZulVOFRW/zj4ApjPa5OFbpIkd0pmzxzd
+EcL479hSA9dFiyVmSxPtY5ze1P+BE9bMU1PScpRzw8MHFXxyKqW13Qv7LWw4sbk3
+SciB7GACbQiVGzgkvXG6y85HOuvWNvC5GLSiyP9GlPB0V68tbxz4JVTRdw/Xn/XT
+FNzRBM3cq8lBOAVt/PAX5+uFcv1S9wFE8YjaBfWCP1jdBil+c4e+0tdywT2oJmYB
+BF/kEt1wmGwMmHunNEuQNzh1FtJY54hbUfiWi38mASE7xMtMhfj/C4SvapiDN837
+gYaPfs8x3KZxbX7C3YAsFnJinlwAUss1fdKar8Q/YVs7H/nU4c4Ixxxz4f67fcVq
+M2ITKentbCMCAwEAAaOCAk4wggJKMAwGA1UdEwQFMAMBAf8wDgYDVR0PAQH/BAQD
+AgHGMB0GA1UdDgQWBBT6VQ2MNGZRQ0z357OnbJWveuaklzCBygYDVR0jBIHCMIG/
+gBT6VQ2MNGZRQ0z357OnbJWveuakl6GBm6SBmDCBlTERMA8GA1UEChMIRnJlZSBU
+U0ExEDAOBgNVBAsTB1Jvb3QgQ0ExGDAWBgNVBAMTD3d3dy5mcmVldHNhLm9yZzEi
+MCAGCSqGSIb3DQEJARYTYnVzaWxlemFzQGdtYWlsLmNvbTESMBAGA1UEBxMJV3Vl
+cnpidXJnMQ8wDQYDVQQIEwZCYXllcm4xCzAJBgNVBAYTAkRFggkAwemGFg2o6YAw
+MwYDVR0fBCwwKjAooCagJIYiaHR0cDovL3d3dy5mcmVldHNhLm9yZy9yb290X2Nh
+LmNybDCBzwYDVR0gBIHHMIHEMIHBBgorBgEEAYHyJAEBMIGyMDMGCCsGAQUFBwIB
+FidodHRwOi8vd3d3LmZyZWV0c2Eub3JnL2ZyZWV0c2FfY3BzLmh0bWwwMgYIKwYB
+BQUHAgEWJmh0dHA6Ly93d3cuZnJlZXRzYS5vcmcvZnJlZXRzYV9jcHMucGRmMEcG
+CCsGAQUFBwICMDsaOUZyZWVUU0EgdHJ1c3RlZCB0aW1lc3RhbXBpbmcgU29mdHdh
+cmUgYXMgYSBTZXJ2aWNlIChTYWFTKTA3BggrBgEFBQcBAQQrMCkwJwYIKwYBBQUH
+MAGGG2h0dHA6Ly93d3cuZnJlZXRzYS5vcmc6MjU2MDANBgkqhkiG9w0BAQ0FAAOC
+AgEAaK9+v5OFYu9M6ztYC+L69sw1omdyli89lZAfpWMMh9CRmJhM6KBqM/ipwoLt
+nxyxGsbCPhcQjuTvzm+ylN6VwTMmIlVyVSLKYZcdSjt/eCUN+41K7sD7GVmxZBAF
+ILnBDmTGJmLkrU0KuuIpj8lI/E6Z6NnmuP2+RAQSHsfBQi6sssnXMo4HOW5gtPO7
+gDrUpVXID++1P4XndkoKn7Svw5n0zS9fv1hxBcYIHPPQUze2u30bAQt0n0iIyRLz
+aWuhtpAtd7ffwEbASgzB7E+NGF4tpV37e8KiA2xiGSRqT5ndu28fgpOY87gD3ArZ
+DctZvvTCfHdAS5kEO3gnGGeZEVLDmfEsv8TGJa3AljVa5E40IQDsUXpQLi8G+UC4
+1DWZu8EVT4rnYaCw1VX7ShOR1PNCCvjb8S8tfdudd9zhU3gEB0rxdeTy1tVbNLXW
+99y90xcwr1ZIDUwM/xQ/noO8FRhm0LoPC73Ef+J4ZBdrvWwauF3zJe33d4ibxEcb
+8/pz5WzFkeixYM2nsHhqHsBKw7JPouKNXRnl5IAE1eFmqDyC7G/VT7OF669xM6hb
+Ut5G21JE4cNK6NNucS+fzg1JPX0+3VhsYZjj7D5uljRvQXrJ8iHgr/M6j2oLHvTA
+I2MLdq2qjZFDOCXsxBxJpbmLGBx9ow6ZerlUxzws2AWv2pk=
+-----END CERTIFICATE-----
+"""
 
 
 if __name__ == "__main__":

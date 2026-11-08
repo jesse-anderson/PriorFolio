@@ -540,7 +540,7 @@ def test_timestamp_status_parsing():
         sa.timestamp_status(b"<html>error</html>")
 
 
-def test_timestamps_round_trip_through_generate_and_verify(workspace, tmp_path, monkeypatch):
+def test_timestamps_round_trip_through_generate_and_verify(unsigned_tokens, workspace, tmp_path, monkeypatch):
     sent = []
 
     def fake_urlopen(request, timeout):
@@ -576,7 +576,7 @@ def test_timestamps_round_trip_through_generate_and_verify(workspace, tmp_path, 
     (lambda req: FakeResponse(granted_response(sa.timestamp_request(b"\0" * 32)[0])), "does not match"),
     (lambda req: FakeResponse(b"<html>503</html>"), "not a timestamp response"),
 ], ids=["rejected", "wrong-hash", "garbage"])
-def test_bad_timestamp_responses_are_not_saved(workspace, tmp_path, monkeypatch, respond, reason):
+def test_bad_timestamp_responses_are_not_saved(unsigned_tokens, workspace, tmp_path, monkeypatch, respond, reason):
     monkeypatch.setattr(sa.urllib.request, "urlopen", lambda request, timeout: respond(request))
     result = run(workspace, tmp_path, names=["plain"], timestamp=True)
     assert all(not t["ok"] and reason in t["error"] for t in result["timestamps"])
@@ -584,7 +584,7 @@ def test_bad_timestamp_responses_are_not_saved(workspace, tmp_path, monkeypatch,
     assert "trusted timestamps" not in result["email"]
 
 
-def test_run_still_completes_when_offline(workspace, tmp_path, monkeypatch):
+def test_run_still_completes_when_offline(unsigned_tokens, workspace, tmp_path, monkeypatch):
     def offline(request, timeout):
         raise OSError("network unreachable")
 
@@ -607,7 +607,10 @@ def test_real_timestamp_authorities(workspace, tmp_path):
 
 def cli(*args):
     script = Path(sa.__file__)
-    return subprocess.run([os.sys.executable, str(script), *map(str, args)],
+    args = [str(a) for a in args]
+    if "--select" in args and "--timestamp" not in args:
+        args.append("--no-timestamp")  # timestamps are on by default; tests stay offline
+    return subprocess.run([os.sys.executable, str(script), *args],
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 

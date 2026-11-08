@@ -3,6 +3,6 @@ include .github/coverage-badge.json
 recursive-include .github/workflows *.yml
 recursive-include scripts *.py
 recursive-include desktop *.py *.terms
-recursive-include tests *.py
+recursive-include tests *.py *.tsr *.json
 recursive-include docs *.png
 global-exclude __pycache__ *.py[cod]

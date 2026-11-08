@@ -86,7 +86,7 @@ def build(output):
     content = {"design.txt": b"Known design bytes.\n", "empty.bin": b""}
     for name, value in content.items():
         (project / name).write_bytes(value)
-    run([cli, "--add", project, "--select", "all", "--out", work / "runs"], work)
+    run([cli, "--add", project, "--select", "all", "--no-timestamp", "--out", work / "runs"], work)
     folder = next((work / "runs").iterdir())
     evidence = json.loads((folder / "evidence.json").read_text())
     with zipfile.ZipFile(folder / evidence["projects"][0]["snapshot"]) as archive:
@@ -123,9 +123,16 @@ def build(output):
                 if sys.platform == "darwin" and path.name == "PriorFolio":
                     continue  # The .app is the GUI distribution on macOS.
                 archive.add(path, arcname=path.name)
-    Path(str(archive_path) + ".sha256").write_text(
-        hashlib.sha256(archive_path.read_bytes()).hexdigest() + "  " + archive_path.name + "\n", encoding="utf-8")
+    write_sidecar(archive_path)
     print(f"Built and verified {archive_path}")
+
+
+def write_sidecar(archive_path):
+    """Write NAME.sha256 with LF line endings on every platform, so sha256sum -c accepts it."""
+    sidecar = Path(str(archive_path) + ".sha256")
+    sidecar.write_text(hashlib.sha256(archive_path.read_bytes()).hexdigest() + "  " + archive_path.name + "\n",
+                       encoding="utf-8", newline="\n")
+    return sidecar
 
 
 if __name__ == "__main__":

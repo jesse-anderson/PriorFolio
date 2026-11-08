@@ -167,7 +167,7 @@ def test_cli_generate_backup_restore_and_confirmation(tmp_path):
     def cli(*args):
         return subprocess.run([sys.executable, str(Path(core.__file__)), *map(str, args)],
                               capture_output=True, text=True, cwd=tmp_path)
-    result = cli("--add", project, "--select", "all", "--out", tmp_path / "runs")
+    result = cli("--add", project, "--select", "all", "--no-timestamp", "--out", tmp_path / "runs")
     assert result.returncode == 0, result.stderr
     run = next((tmp_path / "runs").iterdir())
     assert list((run / "snapshots").glob("*.zip"))
@@ -183,8 +183,14 @@ def test_cli_generate_backup_restore_and_confirmation(tmp_path):
     assert "already exists" in duplicate.stderr and "Traceback" not in duplicate.stderr
 
 
-def test_timestamp_collection_never_claims_signature_verification(recorded):
-    email = core.build_email(recorded["results"], {"generated_utc": "2026-01-01"}, recorded["bundle"],
-                            [{"tsa": "example", "ok": True, "time": "2026-01-01"}], True)
-    assert "signatures have NOT been verified" in email
-    assert "trusted timestamps" not in email.lower()
+def test_email_claims_verified_signatures_only_for_verified_tokens(recorded):
+    def email(stamps):
+        return core.build_email(recorded["results"], {"generated_utc": "2026-01-01"}, recorded["bundle"],
+                                stamps, True)
+    unchecked = email([{"tsa": "example", "ok": True, "time": "2026-01-01", "signature_verified": False}])
+    assert "could NOT be checked" in unchecked and "each verified" not in unchecked
+    verified = email([{"tsa": "example", "ok": True, "time": "2026-01-01", "signature_verified": True}])
+    assert "each verified against the authority's root certificate: example (2026-01-01)" in verified
+    assert "could NOT be checked" not in verified
+    failed = email([{"tsa": "example", "ok": False, "error": "down", "signature_verified": False}])
+    assert "could NOT be checked" not in failed and "each verified" not in failed

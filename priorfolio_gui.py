@@ -43,17 +43,24 @@ PriorFolio - IP disclosures and private evidence
 4. Review the Disclosure tab. disclosure.zip contains only the disclosure text
    and JSON: no automatic local paths, remote URLs, or source-file listings.
    Titles and descriptions are your text; check them before sharing.
-5. Use Export backup to save a complete private ZIP, including source snapshots.
-   Email it to yourself using Backup email, or save it to a cloud-sync folder.
-6. Check the received email attachment or the completed upload in your cloud
+5. Use Export backup to save a private ZIP, including source snapshots. If the
+   run holds likely secrets (.env, keys, credentials), export a FULL copy to
+   keep offline and a CLOUD copy without them. Both share one timestamped record.
+6. Put the copy you send in a password-protected 7-Zip archive (AES-256,
+   Encrypt file names). Email it to yourself using Backup email, or save it
+   to a cloud-sync folder.
+7. Check the received email attachment or the completed upload in your cloud
    provider's web interface, ideally from another device. Confirm remote backup
    records YOUR check. A local export or a queued sync is not a remote backup.
 
 PRIVATE BACKUP
-The private ZIP is not encrypted. It contains source code, project paths,
-remote URLs and file names; selected projects can contain credentials. Keep
-it in an account you control. Its .sha256 sidecar checks the exported ZIP.
-An email containing only a hash does not back up the underlying files.
+The ZIP is not encrypted; the 7-Zip password protects it. It contains source
+code, project paths, remote URLs and file names. Keep the password in a
+password manager: without it the backup cannot be opened. Its .sha256 sidecar
+checks the exported ZIP. A cloud copy verifies every file except those listed
+in WITHHELD.txt; withholding is by file name, so check for secrets written
+inside ordinary files. An email containing only a hash does not back up the
+underlying files.
 
 DISCLOSURE AND EVIDENCE
 Content hash: SHA-256 of the file-hash manifest, sorted by relative path.
@@ -67,15 +74,20 @@ bundle: use it only on evidence you created or trust. It reports changed and
 missing files, not files added after the run.
 
 TIMESTAMPS
-Request timestamps sends a hash to DigiCert, Sectigo and FreeTSA. This option
-is off by default. PriorFolio collects responses and checks basic consistency;
-it does NOT verify signatures or certificate trust. Reported times are
-unverified labels. See README.md for external OpenSSL verification.
+Request timestamps (on by default) sends the SHA-256 of evidence.json to
+DigiCert, Sectigo and FreeTSA. Like any web request, this reveals your IP
+address to them; no project names or files are sent. Each signed response is
+checked against that authority's root certificate, built into PriorFolio,
+using OpenSSL 3 (included with Git for Windows). Without OpenSSL the
+responses are kept but marked "not checked". Untick it to work offline.
 
 PROJECT STATES
 NOT A GIT REPO: a plain folder; it can still be hashed and snapshotted.
 NO COMMITS: a repository without a commit yet.
 Uncommitted: the working files differ from the committed version.
+Repo config can run programs: the repository's own Git settings name a
+program (such as a clean filter). PriorFolio skips git status there so it
+never starts it; files are still hashed, but changes are not counted.
 Remote state reflects local Git information; PriorFolio does not fetch.
 
 Read-only scanning never commits, stages, fetches or changes your projects.
@@ -103,6 +115,11 @@ def explain(p):
         lines.append("Not a git repository. There is no commit hash or commit date; "
                      "the content hash is the only thing that identifies it.")
         return "\n".join(lines)
+    if p.get("config_warning"):
+        lines.append(f"This repository's own Git settings name programs Git could run "
+                     f"({p['config_warning']}). PriorFolio did not run git status here, so it "
+                     "never starts them. Its files are still hashed, but uncommitted changes "
+                     "are not counted. Check those settings if you did not add them.")
     if not p["commit"]:
         lines.append("Git repository with nothing committed yet. There is no commit "
                      "hash; the content hash is the only thing that identifies it.")
@@ -244,11 +261,12 @@ class App(tk.Tk):
         self.tip = Tip(self)
         self.hovered = None
         self.help_window = None
+        self.copies_window = None
         self.pane_job = None
 
         self.out_base = Path.home() / "PriorFolio" / "runs"
         self.snapshot_var = tk.BooleanVar(value=True)
-        self.timestamp_var = tk.BooleanVar(value=False)
+        self.timestamp_var = tk.BooleanVar(value=True)
         self.metadata_var = tk.BooleanVar(value=False)
         self.compare_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="")
@@ -457,10 +475,13 @@ class App(tk.Tk):
         tip(snap, "Also save a zip of the exact files hashed, one per project. Keep these: a "
                   "hash is only useful if you can later produce the files that match it. "
                   "Export backup includes these snapshots in the private ZIP for email or cloud storage.")
-        stamp = ttk.Checkbutton(bar, text="Request timestamps", variable=self.timestamp_var)
+        stamp = ttk.Checkbutton(bar, text="Request timestamps (sends a hash; reveals your IP)",
+                                variable=self.timestamp_var)
         bar.add(stamp)
-        tip(stamp, "Sends a hash to three external services. Responses and reported times are unverified; "
-                   "PriorFolio does not validate signatures. Off by default.")
+        tip(stamp, "Sends the SHA-256 of evidence.json to DigiCert, Sectigo and FreeTSA, which return "
+                   "signed proof of when that hash existed. Like any web request, this reveals your IP "
+                   "address to them. No project names or files are sent. PriorFolio checks each "
+                   "signature against the authority's root certificate. Untick to work offline.")
 
         bar = FlowRow(lower, padding=(0, 0, 0, 8))
         bar.pack(fill="x")
@@ -474,7 +495,9 @@ class App(tk.Tk):
         tip(self.verify_btn, "Re-check an earlier output folder: is the evidence intact, and "
                              "which project files have changed on disk since then?")
         self.backup_btn = ttk.Button(bar, text="Export backup", command=self.export_backup, state="disabled")
-        tip(self.backup_btn, "Save a complete PRIVATE ZIP for email to yourself or a cloud-sync folder. Includes source snapshots.")
+        tip(self.backup_btn, "Save a PRIVATE ZIP, including source snapshots. If the run holds likely secrets, "
+                             "save a full copy to keep offline and a cloud copy without them. "
+                             "7-Zip it with a password before it leaves this computer.")
         self.confirm_btn = ttk.Button(bar, text="Confirm remote backup", command=self.confirm_backup, state="disabled")
         tip(self.confirm_btn, "Record your check that the email attachment arrived or the cloud upload completed.")
         self.history_btn = ttk.Button(bar, text="Previous runs", command=self.show_history)
@@ -782,10 +805,14 @@ class App(tk.Tk):
     def show_run(self, run):
         self.activate_run(run["out_dir"])
         failed = [t["tsa"] for t in run["timestamps"] if not t["ok"]]
-        granted = [t["tsa"] for t in run["timestamps"] if t["ok"]]
-        status = f"Generated {len(run['results'])} projects. Bundle SHA-256 {run['bundle']}."
-        if granted:
-            status += f" Timestamp responses collected from {', '.join(granted)}; signatures unverified."
+        verified = [t["tsa"] for t in run["timestamps"] if t["ok"] and t.get("signature_verified")]
+        unchecked = [t["tsa"] for t in run["timestamps"] if t["ok"] and not t.get("signature_verified")]
+        status = (f"Generated {len(run['results'])} projects and verified the saved run. "
+                  f"Bundle SHA-256 {run['bundle']}.")
+        if verified:
+            status += f" Signed timestamps verified: {', '.join(verified)}."
+        if unchecked:
+            status += f" Timestamps NOT checked (OpenSSL 3 not found): {', '.join(unchecked)}."
         if failed:
             status += f" Timestamp FAILED: {', '.join(failed)}."
         if run["warnings"]:
@@ -814,7 +841,7 @@ class App(tk.Tk):
         metadata_only, compare = self.metadata_var.get(), self.compare_var.get()
 
         def job():
-            summary = sa.run_summary(folder)
+            summary = sa.run_summary(folder, signatures=True)
             evidence = sa.verify_run(folder, metadata_only=metadata_only)
             changed = []
             if summary and compare:
@@ -831,15 +858,23 @@ class App(tk.Tk):
             lines += [f"Bundle SHA-256: {summary['bundle']}",
                       f"Generated (UTC): {summary['generated_utc']}",
                       f"Projects: {summary['projects']}"]
-            lines += [f"Timestamp {name}: {when or 'time not readable'} (signature not checked)"
-                      for name, when in summary["timestamps"]]
+            lines += [f"Timestamp {name}: {when or 'time not readable'} ({sa.SIGNATURE_LABELS[state]})"
+                      for name, when, state in summary["timestamps"]]
             lines.append("")
         if evidence:
             lines += [f"EVIDENCE: {len(evidence)} PROBLEM(S)"] + ["  " + m for m in evidence]
         else:
             lines.append("METADATA: OK. Source snapshots were NOT checked." if metadata_only else
                          "EVIDENCE: OK. Evidence hashes match.")
-        lines.append("Timestamp signatures and certificate trust were NOT checked.")
+        try:
+            withheld = exports.withheld_files(folder)
+        except (OSError, ValueError):
+            withheld = []  # reported above as an evidence problem
+        if withheld:
+            lines += ["", f"CLOUD COPY: {len(withheld)} file(s) were left out of its snapshots "
+                          "(see WITHHELD.txt). Their hashes are still recorded, but their contents "
+                          "can only be checked with the full copy:"]
+            lines += [f"  {f['project']}: {f['path']}" for f in withheld]
         if summary:
             lines.append("")
             if not compare:
@@ -875,10 +910,18 @@ class App(tk.Tk):
     def refresh_backup(self):
         status = exports.backup_status(self.out_dir)
         state = status.get("state")
+        withheld = len(status.get("withheld") or [])
+        if withheld:
+            full = ("the full copy was exported for offline storage" if status.get("full_copy")
+                    else "export a FULL copy too and keep it offline")
+            copy = f" It is a cloud copy without {withheld} file(s); {full}."
+        else:
+            copy = ""
         if state == "confirmed_by_user":
-            message = f"Remote backup confirmed by you ({status.get('method')}, {status.get('confirmed_utc')})."
+            message = f"Remote backup confirmed by you ({status.get('method')}, {status.get('confirmed_utc')}).{copy}"
         elif state == "exported":
-            message = "Backup ZIP exported. Check the received email or completed cloud upload, then confirm remote backup."
+            message = ("Backup ZIP exported. 7-Zip it with a password, email or upload it, check the "
+                       f"remote copy, then confirm remote backup.{copy}")
         else:
             message = "BACKUP REQUIRED: export the complete ZIP, then email it to yourself or upload it to private cloud storage."
         others = [path for path in self.pending_runs() if path != self.out_dir]
@@ -932,18 +975,84 @@ class App(tk.Tk):
     def export_backup(self):
         if self.busy or not self.out_dir:
             return
-        target = filedialog.asksaveasfilename(
-            title="Save PRIVATE backup for email or a cloud-sync folder",
-            initialdir=str(Path.home()),
-            initialfile=f"PriorFolio-{self.out_dir.name}-private.zip",
-            defaultextension=".zip", filetypes=[("ZIP archive", "*.zip")])
-        if not target:
+        secrets = exports.likely_secrets(self.out_dir)
+        if secrets:
+            self.choose_copies(secrets)
+        else:
+            self.export_copies(None)
+
+    def choose_copies(self, secrets):
+        """Offer a full copy for offline storage and a cloud copy without likely secrets."""
+        win = self.copies_window = tk.Toplevel(self)
+        win.title("Backup copies")
+        win.transient(self)
+        win.grab_set()
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, wraplength=560, justify="left", text=(
+            f"{len(secrets)} file(s) in this run have names that often hold passwords, tokens or "
+            "private keys. PriorFolio can export two copies of the same timestamped record:\n\n"
+            "  - a FULL copy with every file, to keep offline, such as on an external drive;\n"
+            "  - a CLOUD copy that leaves out the files selected below, to email or upload.\n\n"
+            "Selection is by file name only. Put each copy in a password-protected 7-Zip "
+            "archive before it leaves this computer.")).pack(fill="x")
+        rows = tk.Listbox(frame, selectmode="multiple", exportselection=False, width=80,
+                          height=min(10, len(secrets)))
+        for item in secrets:
+            rows.insert("end", item)
+        rows.selection_set(0, "end")
+        rows.pack(fill="both", expand=True, pady=10)
+        self.tip.attach(rows, "Selected files are left out of the cloud copy. Click to change the selection.")
+        actions = ttk.Frame(frame)
+        actions.pack(anchor="e")
+
+        def finish(withhold):
+            win.destroy()
+            self.copies_window = None
+            self.export_copies(withhold)
+
+        ttk.Button(actions, text="Export full and cloud copies",
+                   command=lambda: finish([secrets[i] for i in rows.curselection()] or None)).pack(side="left")
+        ttk.Button(actions, text="Full copy only", command=lambda: finish(None)).pack(side="left", padx=6)
+        ttk.Button(actions, text="Cancel", command=win.destroy).pack(side="left")
+
+    def export_copies(self, withhold):
+        """Ask where to save the full copy, and the cloud copy when files are withheld."""
+        run_dir, name = self.out_dir, self.out_dir.name
+        types = dict(defaultextension=".zip", filetypes=[("ZIP archive", "*.zip")])
+        if withhold:
+            full = filedialog.asksaveasfilename(
+                title="Save the FULL private backup (keep it offline)", initialdir=str(Path.home()),
+                initialfile=f"PriorFolio-{name}-full.zip", **types)
+        else:
+            full = filedialog.asksaveasfilename(
+                title="Save PRIVATE backup for email or a cloud-sync folder", initialdir=str(Path.home()),
+                initialfile=f"PriorFolio-{name}-private.zip", **types)
+        if not full:
             return
-        self.work(lambda: exports.export_backup(self.out_dir, target), self.show_backup)
+        cloud = None
+        if withhold:
+            cloud = filedialog.asksaveasfilename(
+                title=f"Save the CLOUD copy ({len(withhold)} file(s) withheld)",
+                initialdir=str(Path(full).parent), initialfile=f"PriorFolio-{name}-cloud.zip", **types)
+
+        def job():
+            status = exports.export_backup(run_dir, full)
+            if cloud:
+                status = exports.export_backup(run_dir, cloud, withhold)
+            return status
+
+        self.work(job, self.show_backup)
 
     def show_backup(self, status):
         self.refresh_backup()
-        self.status_var.set(f"Exported {status['archive']}. SHA-256 {status['archive_sha256']}")
+        if status.get("withheld"):
+            self.status_var.set(f"Exported the full copy and a cloud copy without {len(status['withheld'])} "
+                                f"file(s): {status['archive']}. SHA-256 {status['archive_sha256']}. "
+                                "7-Zip it with a password before uploading.")
+        else:
+            self.status_var.set(f"Exported {status['archive']}. SHA-256 {status['archive_sha256']}. "
+                                "7-Zip it with a password before it leaves this computer.")
 
     def confirm_backup(self):
         if self.busy or not self.out_dir:

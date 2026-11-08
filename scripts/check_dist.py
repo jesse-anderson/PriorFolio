@@ -20,7 +20,8 @@ ROOT_FILES = MODULES | {"gui.py", "LICENSE", "README.md", "CHANGELOG.md", "CONTR
 EXTRA_FILES = {"docs/preview.png", "scripts/check_dist.py", ".github/workflows/tests.yml",
                ".github/workflows/publish.yml", "tests/conftest.py", "tests/test_core.py",
                "tests/test_edge_cases.py", "tests/test_gui.py", "tests/test_privacy_backup.py",
-               "tests/test_workflows.py", "tests/test_release.py", "tests/test_hardening.py",
+               "tests/test_workflows.py", "tests/test_release.py", "tests/test_hardening.py", "tests/data/evidence.json",
+               "tests/data/digicert.tsr", "tests/data/sectigo.tsr", "tests/data/freetsa.tsr",
                ".github/coverage-badge.json",
                ".github/workflows/desktop.yml", "scripts/build_desktop.py",
                "scripts/update_coverage_badge.py", "desktop/cli_entry.py", "desktop/gui_entry.py",
@@ -62,7 +63,7 @@ def check(directory, expected_version=None):
         require(set(names) == allowed and len(names) == len(allowed), "Unexpected or duplicate wheel files.")
         wheel_modules = {name: archive.read(name) for name in MODULES}
         entry_points = archive.read(f"{prefix}/entry_points.txt").decode()
-        require("priorfolio-gui = priorfolio_gui:main" in entry_points, "GUI entry point uses the wrong module.")
+        require("priorfolio-gui = priorfolio:gui_main" in entry_points, "GUI entry point uses the wrong module.")
         require("priorfolio = priorfolio:main" in entry_points, "Missing CLI entry point.")
         require(archive.read(f"{prefix}/licenses/LICENSE").startswith(b"Copyright"), "License missing.")
     with tarfile.open(sources[0]) as archive:
@@ -101,7 +102,7 @@ def check(directory, expected_version=None):
         for name, content in expected.items():
             (project / name).write_bytes(content)
         (project / "ignored.txt").write_text("Excluded by the project's ignore rule.")
-        run([command, "--add", project, "--select", "all", "--out", case / "runs"], case)
+        run([command, "--add", project, "--select", "all", "--no-timestamp", "--out", case / "runs"], case)
         folders = list((case / "runs").iterdir())
         require(len(folders) == 1, "Expected one evidence run.")
         folder = folders[0]

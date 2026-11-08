@@ -38,6 +38,8 @@ def desktop(tmp_path, monkeypatch):
             pytest.skip("no display")
         raise
     app.out_base = tmp_path / "runs"
+    app.timestamp_default = app.timestamp_var.get()
+    app.timestamp_var.set(False)  # on by default; tests stay offline
     app.dialogs = dialogs
     app.callback_errors = []
     app.report_callback_exception = lambda kind, value, traceback: app.callback_errors.append(value)
@@ -325,3 +327,107 @@ def test_deleted_run_folder_does_not_block_closing_forever(desktop, tmp_path, mo
     rows = next(w for w in window.winfo_children()[0].winfo_children() if isinstance(w, tk.Listbox))
     assert "FOLDER NOT FOUND" in rows.get(1)
     window.destroy()
+
+
+def test_timestamps_are_on_by_default_and_the_control_says_it_reveals_your_ip(desktop):
+    assert desktop.timestamp_default is True
+
+    def widgets(parent):
+        for child in parent.winfo_children():
+            yield child
+            yield from widgets(child)
+
+    control = next(w for w in widgets(desktop)
+                   if isinstance(w, gui.ttk.Checkbutton) and "timestamps" in str(w.cget("text")))
+    assert "IP" in str(control.cget("text"))
+    assert "IP address" in " ".join(gui.HELP_TEXT.split())
+
+
+def secret_run(desktop, tmp_path):
+    write(tmp_path / "projects" / "Alpha", {".env": "TOKEN=private\n", "deploy.pem": "KEY\n"})
+    button(desktop, "Rescan").invoke()
+    settle(desktop)
+    return generate(desktop, "Alpha")
+
+
+def save_dialogs(monkeypatch, answers):
+    """Answer each save dialog in turn; returns the dialogs' keyword arguments."""
+    asked, answers = [], list(answers)
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename",
+                        lambda **kw: asked.append(kw) or (str(answers.pop(0)) if answers else ""))
+    return asked
+
+
+def test_secrets_lead_to_a_full_copy_and_a_cloud_copy(desktop, tmp_path, monkeypatch):
+    run = secret_run(desktop, tmp_path)
+    asked = save_dialogs(monkeypatch, [tmp_path / "full.zip", tmp_path / "cloud.zip"])
+    button(desktop, "Export backup").invoke()
+    window = desktop.copies_window
+    rows = next(w for w in window.winfo_children()[0].winfo_children() if isinstance(w, tk.Listbox))
+    assert rows.get(0, "end") == ("Alpha: .env", "Alpha: deploy.pem") and len(rows.curselection()) == 2
+    assert not asked, "no file dialog before choosing copies"
+    button(desktop, "Export full and cloud copies").invoke()
+    settle(desktop)
+    assert [kw["initialfile"] for kw in asked] == [f"PriorFolio-{run.name}-full.zip",
+                                                    f"PriorFolio-{run.name}-cloud.zip"]
+    assert "keep it offline" in asked[0]["title"] and "2 file(s) withheld" in asked[1]["title"]
+    status = exports.backup_status(run)
+    assert status["withheld"] == ["Alpha: .env", "Alpha: deploy.pem"]
+    assert status["full_copy"]["archive"] == str(tmp_path / "full.zip")
+    assert "cloud copy without 2 file(s); the full copy was exported" in desktop.backup_var.get()
+    with zipfile.ZipFile(tmp_path / "cloud.zip") as z:
+        assert "WITHHELD.txt" in z.namelist()
+
+
+def test_unselected_files_stay_in_the_cloud_copy(desktop, tmp_path, monkeypatch):
+    run = secret_run(desktop, tmp_path)
+    save_dialogs(monkeypatch, [tmp_path / "full.zip", tmp_path / "cloud.zip"])
+    button(desktop, "Export backup").invoke()
+    rows = next(w for w in desktop.copies_window.winfo_children()[0].winfo_children()
+                if isinstance(w, tk.Listbox))
+    rows.selection_clear(1)
+    button(desktop, "Export full and cloud copies").invoke()
+    settle(desktop)
+    assert exports.backup_status(run)["withheld"] == ["Alpha: .env"]
+
+
+@pytest.mark.parametrize("choice, dialogs, exported", [
+    ("Full copy only", 1, ["full.zip"]),
+    ("Cancel", 0, []),
+])
+def test_full_copy_only_or_cancel(desktop, tmp_path, monkeypatch, choice, dialogs, exported):
+    run = secret_run(desktop, tmp_path)
+    asked = save_dialogs(monkeypatch, [tmp_path / "full.zip", tmp_path / "cloud.zip"])
+    button(desktop, "Export backup").invoke()
+    button(desktop, choice).invoke()
+    settle(desktop)
+    assert len(asked) == dialogs
+    assert sorted(p.name for p in tmp_path.glob("*.zip")) == exported
+    assert "withheld" not in exports.backup_status(run)
+
+
+def test_cancelling_the_cloud_dialog_still_saves_the_full_copy(desktop, tmp_path, monkeypatch):
+    run = secret_run(desktop, tmp_path)
+    save_dialogs(monkeypatch, [tmp_path / "full.zip"])  # the second dialog is cancelled
+    button(desktop, "Export backup").invoke()
+    button(desktop, "Export full and cloud copies").invoke()
+    settle(desktop)
+    assert exports.backup_status(run)["archive"] == str(tmp_path / "full.zip")
+    assert not (tmp_path / "cloud.zip").exists()
+
+
+def test_without_secrets_export_goes_straight_to_one_private_copy(desktop, tmp_path, monkeypatch):
+    run = generate(desktop, "Alpha")
+    asked = save_dialogs(monkeypatch, [tmp_path / "private.zip"])
+    button(desktop, "Export backup").invoke()
+    settle(desktop)
+    assert desktop.copies_window is None
+    assert len(asked) == 1 and asked[0]["initialfile"] == f"PriorFolio-{run.name}-private.zip"
+    assert "7-Zip" in desktop.status_var.get()
+
+
+def test_row_help_explains_a_skipped_git_status():
+    text = gui.explain({"path": "/p", "state": "repo config can run programs (filter.x.clean); git status skipped",
+                        "git_error": None, "is_repo": True, "commit": "abc", "modified": 0, "untracked": 0,
+                        "remote": None, "unpushed": None, "config_warning": "filter.x.clean"})
+    assert "filter.x.clean" in text and "never starts them" in text
