@@ -244,6 +244,7 @@ class App(tk.Tk):
         self.tip = Tip(self)
         self.hovered = None
         self.help_window = None
+        self.pane_job = None
 
         self.out_base = Path.home() / "PriorFolio" / "runs"
         self.snapshot_var = tk.BooleanVar(value=True)
@@ -257,6 +258,7 @@ class App(tk.Tk):
 
         self.sources = []  # (kind, path) pairs, in the same order as the listbox
         self.build()
+        self.bind("<Configure>", self.schedule_panes, add="+")
         for kind, path in self.load_sources():
             self.add_source(kind, path)
         self.restore_last_run()
@@ -400,7 +402,7 @@ class App(tk.Tk):
         tip(info, "Open a plain-language guide: the steps, what every column, hash and "
                   "option means, and what this tool does not prove.")
 
-        panes = ttk.PanedWindow(self, orient="vertical")
+        panes = self.panes = ttk.PanedWindow(self, orient="vertical")
         panes.pack(fill="both", expand=True, padx=8)
 
         upper = ttk.Frame(panes)
@@ -504,6 +506,29 @@ class App(tk.Tk):
         bottom.pack(side="bottom", fill="x", before=panes)
         ttk.Label(bottom, textvariable=self.backup_var, wraplength=760).pack(fill="x")
         ttk.Label(bottom, textvariable=self.status_var, wraplength=760).pack(fill="x")
+
+    def schedule_panes(self, event=None):
+        if self.pane_job is None:
+            self.pane_job = self.after_idle(self.fit_panes)
+
+    def fit_panes(self):
+        """Keep both project selection and the preview usable after reflow."""
+        self.pane_job = None
+        upper, lower = self.panes.winfo_children()
+        available = self.panes.winfo_height()
+        if available <= 1:
+            return
+        # Native pane weights alone can give all spare space to either pane.
+        # Keep the user's divider position unless controls or text are clipped.
+        sash = max(1, lower.winfo_y() - upper.winfo_height())
+        text_request = max(self.email_text.winfo_reqheight(), self.table_text.winfo_reqheight())
+        minimum_lower = lower.winfo_reqheight() - text_request + 72
+        minimum_upper = 96
+        maximum_upper = max(minimum_upper, available - sash - minimum_lower)
+        current = self.panes.sashpos(0)
+        target = max(minimum_upper, min(current, maximum_upper))
+        if current != target:
+            self.panes.sashpos(0, target)
 
     def add_tab(self, title, copy_help):
         frame = ttk.Frame(self.tabs)
@@ -959,6 +984,9 @@ class App(tk.Tk):
         self.destroy()
 
     def destroy(self):
+        if getattr(self, "pane_job", None):
+            self.after_cancel(self.pane_job)
+            self.pane_job = None
         if getattr(self, "poll_job", None):
             self.after_cancel(self.poll_job)
             self.poll_job = None

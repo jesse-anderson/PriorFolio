@@ -100,7 +100,13 @@ def test_small_window_keeps_action_controls_and_output_visible(desktop):
         assert widget.winfo_rootx() >= desktop.winfo_rootx(), label
         assert widget.winfo_rootx() + widget.winfo_width() <= desktop.winfo_rootx() + desktop.winfo_width(), label
         assert widget.winfo_rooty() + widget.winfo_height() <= desktop.winfo_rooty() + desktop.winfo_height(), label
-    assert desktop.table_text.winfo_height() >= 60
+    assert desktop.table_text.winfo_height() >= 60, {
+        "window": desktop.winfo_geometry(),
+        "panes": desktop.panes.winfo_geometry(),
+        "divider": desktop.panes.sashpos(0),
+        "pane_requests": [pane.winfo_reqheight() for pane in desktop.panes.winfo_children()],
+        "preview": desktop.table_text.winfo_geometry(),
+    }
 
 
 def test_cancelled_export_changes_nothing(desktop, monkeypatch):
