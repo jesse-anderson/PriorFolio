@@ -810,8 +810,9 @@ class App(tk.Tk):
         failed = [t["tsa"] for t in run["timestamps"] if not t["ok"]]
         verified = [t["tsa"] for t in run["timestamps"] if t["ok"] and t.get("signature_verified")]
         unchecked = [t["tsa"] for t in run["timestamps"] if t["ok"] and not t.get("signature_verified")]
-        status = (f"Generated {len(run['results'])} projects and verified the saved run. "
-                  f"Bundle SHA-256 {run['bundle']}.")
+        # Keep the first sentence short: a wrapped status line squeezes the preview on
+        # small screens. Every run shown here already passed its read-back verification.
+        status = f"Generated {len(run['results'])} projects. Bundle SHA-256 {run['bundle']}."
         if verified:
             status += f" Signed timestamps verified: {', '.join(verified)}."
         if unchecked:
