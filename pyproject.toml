@@ -43,7 +43,8 @@ py-modules = ["priorfolio", "priorfolio_exports", "priorfolio_gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Keep native standard handles stable while Tk interpreters are created/destroyed.
+addopts = "-ra --capture=sys"
 
 [tool.coverage.run]
 source = ["priorfolio", "priorfolio_exports", "priorfolio_gui"]

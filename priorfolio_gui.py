@@ -184,7 +184,11 @@ class FlowRow(ttk.Frame):
 
     def layout(self):
         self.layout_job = None
-        width = max(1, self.winfo_width())
+        width = self.winfo_width()
+        if width <= 1:
+            # Wait for real geometry. One control per row during startup makes
+            # the paned window cache an oversized lower pane and hide the list.
+            return
         groups, row, used = [], [], 0
         for control in self.controls:
             required = control.winfo_reqwidth() + 8
@@ -415,8 +419,8 @@ class App(tk.Tk):
         self.tree.tag_configure("dirty", foreground="#ffd580" if dark else "#805500")
         scroll = ttk.Scrollbar(upper, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="left", fill="y")
         self.tree.bind("<Button-1>", self.on_click)
         self.tree.bind("<Motion>", self.on_hover)
         self.tree.bind("<Leave>", self.on_leave)

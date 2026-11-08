@@ -118,6 +118,27 @@ def test_clicking_rows_ticks_and_unticks_them(app):
     assert app.checked == set() and app.tree.set(str(index), "sel") == gui.UNCHECKED
 
 
+@pytest.mark.parametrize("screen", [(1024, 768), (880, 670)])
+def test_small_screen_keeps_project_rows_and_scrollbar_usable(screen, monkeypatch, request):
+    monkeypatch.setattr(tk.Tk, "winfo_screenwidth", lambda self: screen[0])
+    monkeypatch.setattr(tk.Tk, "winfo_screenheight", lambda self: screen[1])
+    app = request.getfixturevalue("app")
+    first = click_row(app, "plain")
+    second = click_row(app, "repo")
+    assert app.checked == {first, second}
+    _, y, _, height = app.tree.bbox(str(second))
+    assert app.tree.winfo_height() >= 3 * height
+    assert y + height <= app.tree.winfo_height()
+    scrollbar = next(child for child in app.tree.master.winfo_children()
+                     if child.winfo_class() == "TScrollbar")
+    assert scrollbar.winfo_viewable()
+    assert scrollbar.winfo_width() >= scrollbar.winfo_reqwidth()
+    for label in ("Generate", "Verify a run", "Export backup", "Previous runs"):
+        widget = button(app, label)
+        assert widget.winfo_viewable(), label
+        assert widget.winfo_rooty() + widget.winfo_height() <= app.winfo_rooty() + app.winfo_height(), label
+
+
 def test_row_selection_does_not_depend_on_native_theme_region_labels(app, monkeypatch):
     monkeypatch.setattr(app.tree, "identify_region", lambda *args: "tree")
     index = click_row(app, "plain")

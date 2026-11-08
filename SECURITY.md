@@ -1,8 +1,8 @@
 # Security
 
 PriorFolio 0.1.x is an initial release under development. Report vulnerabilities
-privately using this repository's GitHub Security > Report a vulnerability
-control once private vulnerability reporting is enabled. Do not post credentials
+privately using [GitHub's private reporting form](https://github.com/jesse-anderson/PriorFolio/security/advisories/new).
+Do not post credentials
 or real evidence publicly. If private reporting is unavailable, open a minimal
 issue requesting a private reporting channel, without exploit details or data.
 
