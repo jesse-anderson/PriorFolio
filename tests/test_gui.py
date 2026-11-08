@@ -72,10 +72,23 @@ def button(window, text):
 
 def click_row(window, name):
     index = next(i for i, p in enumerate(window.projects) if p["name"] == name)
-    window.tree.see(str(index))
-    window.update()
-    x, y, width, height = window.tree.bbox(str(index), "name")
-    window.tree.event_generate("<Button-1>", x=x + 5, y=y + height // 2)
+    deadline = time.monotonic() + 2
+    while True:
+        # Aqua applies native geometry changes asynchronously. Let pending
+        # status/layout changes settle before scrolling the next row into view.
+        window.update()
+        window.tree.see(str(index))
+        window.update()
+        bounds = window.tree.bbox(str(index), "name")
+        if bounds:
+            break
+        assert time.monotonic() < deadline, (
+            f"Row {name!r} is not visible: tree={window.tree.winfo_geometry()}, "
+            f"window={window.winfo_geometry()}, scroll={window.tree.yview()}")
+        time.sleep(0.01)
+    x, y, width, height = bounds
+    window.tree.event_generate("<ButtonPress-1>", x=x + 5, y=y + height // 2)
+    window.tree.event_generate("<ButtonRelease-1>", x=x + 5, y=y + height // 2)
     window.update()
     return index
 
@@ -338,13 +351,16 @@ def test_space_toggles_the_focused_project(app):
     row = click_row(app, "plain")
     app.tree.focus(str(row))
     app.tree.focus_force()
-    app.update()
-    app.tree.event_generate("<space>")
-    app.update()
-    assert row not in app.checked
-    app.tree.event_generate("<space>")
-    app.update()
-    assert row in app.checked
+    deadline = time.monotonic() + 2
+    while app.focus_get() != app.tree and time.monotonic() < deadline:
+        app.update()
+        time.sleep(0.01)
+    assert app.focus_get() == app.tree
+    for expected in (False, True):
+        app.tree.event_generate("<KeyPress>", keysym="space", when="tail")
+        app.tree.event_generate("<KeyRelease>", keysym="space", when="tail")
+        app.update()
+        assert (row in app.checked) == expected
 
 
 def test_project_details_are_saved_and_reach_the_disclosure(app):
