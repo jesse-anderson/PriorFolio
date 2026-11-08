@@ -95,7 +95,7 @@ Warnings identify content that could not be read. Review and resolve them.
 A hash identifies bytes; it does not establish authorship or ownership.
 PriorFolio is not legal advice.
 
-PriorFolio 0.1.0a2 - Copyright (c) 2026 Jesse Anderson
+PriorFolio 0.1.0a3 - Copyright (c) 2026 Jesse Anderson
 GNU GPL version 3. See LICENSE. Provided without warranty.
 """
 
@@ -475,8 +475,9 @@ class App(tk.Tk):
         tip(snap, "Also save a zip of the exact files hashed, one per project. Keep these: a "
                   "hash is only useful if you can later produce the files that match it. "
                   "Export backup includes these snapshots in the private ZIP for email or cloud storage.")
-        stamp = ttk.Checkbutton(bar, text="Request timestamps (sends a hash; reveals your IP)",
-                                variable=self.timestamp_var)
+        # Keep this label short: a longer one wraps the row and squeezes the preview
+        # on small screens. The notice below the controls carries the IP warning.
+        stamp = ttk.Checkbutton(bar, text="Request timestamps", variable=self.timestamp_var)
         bar.add(stamp)
         tip(stamp, "Sends the SHA-256 of evidence.json to DigiCert, Sectigo and FreeTSA, which return "
                    "signed proof of when that hash existed. Like any web request, this reveals your IP "
@@ -514,8 +515,10 @@ class App(tk.Tk):
             control = ttk.Checkbutton(checks, text=label, variable=variable)
             control.pack(side="left", padx=(0, 12))
             tip(control, help_text)
-        ttk.Label(lower, text="Disclosure: review before sharing. Private backup: includes paths, source code and possible credentials.",
-                  wraplength=760).pack(fill="x", pady=4)
+        self.notice = ttk.Label(
+            lower, text="Disclosure: review before sharing. Timestamps reveal your IP. Backups: 7-Zip with a password.",
+            wraplength=760)
+        self.notice.pack(fill="x", pady=4)
 
         self.tabs = ttk.Notebook(lower)
         self.tabs.pack(fill="both", expand=True)

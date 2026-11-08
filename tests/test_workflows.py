@@ -329,17 +329,10 @@ def test_deleted_run_folder_does_not_block_closing_forever(desktop, tmp_path, mo
     window.destroy()
 
 
-def test_timestamps_are_on_by_default_and_the_control_says_it_reveals_your_ip(desktop):
+def test_timestamps_are_on_by_default_and_the_window_says_they_reveal_your_ip(desktop):
     assert desktop.timestamp_default is True
-
-    def widgets(parent):
-        for child in parent.winfo_children():
-            yield child
-            yield from widgets(child)
-
-    control = next(w for w in widgets(desktop)
-                   if isinstance(w, gui.ttk.Checkbutton) and "timestamps" in str(w.cget("text")))
-    assert "IP" in str(control.cget("text"))
+    assert "Timestamps reveal your IP" in str(desktop.notice.cget("text"))
+    assert desktop.notice.winfo_viewable()
     assert "IP address" in " ".join(gui.HELP_TEXT.split())
 
 

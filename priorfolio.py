@@ -37,7 +37,7 @@ import urllib.parse
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-VERSION = "0.1.0a2"
+VERSION = "0.1.0a3"
 
 # RFC 3161 timestamp authorities. Only the SHA-256 of evidence.json is sent.
 TSAS = [

@@ -39,7 +39,7 @@ launcher is `priorfolio-gui`; `python -m priorfolio --gui` is an alternative.
 Install the pinned alpha release from PyPI:
 
 ```console
-python -m pip install "priorfolio==0.1.0a2"
+python -m pip install "priorfolio==0.1.0a3"
 priorfolio --gui
 ```
 

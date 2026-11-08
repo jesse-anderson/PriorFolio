@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a3 - signed timestamps and cloud backup copies
 
 - Signed timestamps are on by default (`--no-timestamp` to stay offline), and
   the CLI and desktop app say that requesting them reveals your IP address.
