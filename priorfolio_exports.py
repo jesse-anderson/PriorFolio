@@ -173,11 +173,15 @@ def export_backup(run_dir, destination):
             created = True
             with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
                 for name, source_path in sorted(sources.items()):
-                    with source_path.open("rb") as source, archive.open(name, "w", force_zip64=True) as target:
-                        digest = hashlib.sha256()
-                        for chunk in iter(lambda: source.read(1 << 20), b""):
-                            target.write(chunk)
-                            digest.update(chunk)
+                    with source_path.open("rb") as source:
+                        # Zip64 headers only where needed: forcing them on every entry
+                        # makes Info-ZIP's unzip report errors for non-ASCII names.
+                        large = os.fstat(source.fileno()).st_size > 0x7FFF0000
+                        with archive.open(name, "w", force_zip64=large) as target:
+                            digest = hashlib.sha256()
+                            for chunk in iter(lambda: source.read(1 << 20), b""):
+                                target.write(chunk)
+                                digest.update(chunk)
                     if name in expected and digest.hexdigest() != expected[name]:
                         raise core.ToolError("Evidence changed during backup: " + name)
             output.flush()

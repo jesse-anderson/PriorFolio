@@ -2,6 +2,7 @@
 import gc
 import hashlib
 import json
+import shutil
 import tkinter as tk
 import zipfile
 from pathlib import Path
@@ -302,3 +303,25 @@ def test_larger_system_font_does_not_clip_action_labels(desktop):
     for widget in desktop.winfo_children()[-1].winfo_children():
         assert widget.winfo_viewable()
         assert widget.winfo_rooty() + widget.winfo_height() <= desktop.winfo_rooty() + desktop.winfo_height()
+
+
+def test_deleted_run_folder_does_not_block_closing_forever(desktop, tmp_path, monkeypatch):
+    alpha = generate(desktop, "Alpha")
+    beta = generate(desktop, "Beta")
+    exports.export_backup(beta, tmp_path / "beta.zip")
+    exports.confirm_backup(beta, "cloud")
+    shutil.rmtree(alpha)  # the user removed a run they no longer want
+    desktop.refresh_backup()
+    assert desktop.pending_runs() == []
+    assert "other run(s)" not in desktop.backup_var.get()
+    asked, destroyed = [], []
+    with monkeypatch.context() as patch:
+        patch.setattr(gui.messagebox, "askyesno", lambda title, text: asked.append(text) or False)
+        patch.setattr(desktop, "destroy", lambda: destroyed.append(True))
+        desktop.close()
+    assert not asked and destroyed
+    button(desktop, "Previous runs").invoke()
+    window = next(w for w in desktop.winfo_children() if isinstance(w, tk.Toplevel))
+    rows = next(w for w in window.winfo_children()[0].winfo_children() if isinstance(w, tk.Listbox))
+    assert "FOLDER NOT FOUND" in rows.get(1)
+    window.destroy()

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0a2 - first PyPI release
+
+- Exported backup ZIPs no longer add zip64 headers to small entries, so Info-ZIP
+  `unzip` restores backups of projects with non-ASCII names without errors.
+- `priorfolio --gui` explains how to install Tkinter when it is missing,
+  instead of showing a traceback.
+- Deleted run folders no longer keep the desktop app asking about a pending
+  backup on every close; Previous runs labels them FOLDER NOT FOUND.
+- Fuller PyPI classifiers, and tests that keep the version, classifiers and
+  source-archive allowlist consistent.
+
 ## 0.1.0a1 - initial alpha
 
 - Describe projects and export a disclosure separately from private evidence.

@@ -34,7 +34,7 @@ reviewed source. Check the complete Windows/Linux/macOS CI matrix before tagging
 the release. Enable private vulnerability reporting in repository settings.
 Screenshots and issue reproductions must use synthetic projects.
 
-Create a tag matching the package version, for example `v0.1.0a1`. Publishing is
+Create a tag matching the package version, for example `v0.1.0a2`. Publishing is
 manual: pushing a commit or tag alone does not upload a package.
 
 ## Configure Trusted Publishing
@@ -63,7 +63,7 @@ See the official [Trusted Publishing guide](https://docs.pypi.org/trusted-publis
 2. In a fresh virtual environment, install that exact TestPyPI version:
 
    ```console
-   python -m pip install --index-url https://test.pypi.org/simple/ --no-deps "priorfolio==0.1.0a1"
+   python -m pip install --index-url https://test.pypi.org/simple/ --no-deps "priorfolio==0.1.0a2"
    priorfolio --version
    priorfolio --gui
    ```

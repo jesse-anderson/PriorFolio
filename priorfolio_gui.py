@@ -83,7 +83,7 @@ Warnings identify content that could not be read. Review and resolve them.
 A hash identifies bytes; it does not establish authorship or ownership.
 PriorFolio is not legal advice.
 
-PriorFolio 0.1.0a1 - Copyright (c) 2026 Jesse Anderson
+PriorFolio 0.1.0a2 - Copyright (c) 2026 Jesse Anderson
 GNU GPL version 3. See LICENSE. Provided without warranty.
 """
 
@@ -355,7 +355,10 @@ class App(tk.Tk):
         self.refresh_backup()
 
     def pending_runs(self):
-        return [path for path in self.runs if exports.backup_status(path).get("state") != "confirmed_by_user"]
+        # A deleted run cannot be backed up any more, so it must not block closing.
+        # A run on a disconnected drive is remembered and counts again once it returns.
+        return [path for path in self.runs if path.is_dir()
+                and exports.backup_status(path).get("state") != "confirmed_by_user"]
 
     def update_pending_message(self):
         pending = self.pending_runs()
@@ -904,7 +907,8 @@ class App(tk.Tk):
                   "confirmed_by_user": "Confirmed by you"}
         for path in paths:
             state = exports.backup_status(path).get("state", "backup_required")
-            rows.insert("end", f"{path.name} | {labels[state]} | {path.parent}")
+            label = labels[state] if path.is_dir() else "FOLDER NOT FOUND"
+            rows.insert("end", f"{path.name} | {label} | {path.parent}")
         rows.pack(fill="both", expand=True, pady=8)
         rows.selection_set(0)
 

@@ -37,7 +37,7 @@ import urllib.parse
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-VERSION = "0.1.0a1"
+VERSION = "0.1.0a2"
 
 # RFC 3161 timestamp authorities. Only the SHA-256 of evidence.json is sent.
 TSAS = [
@@ -1053,7 +1053,14 @@ def main():
 
 def run_cli(args):
     if args.gui:
-        from priorfolio_gui import main as gui_main
+        try:
+            from priorfolio_gui import main as gui_main
+        except ImportError as e:
+            if (e.name or "").split(".")[0] not in ("tkinter", "_tkinter"):
+                raise
+            raise ToolError("The desktop interface needs Tkinter, which this Python installation "
+                            "does not include. Install your system's Tk package (for example "
+                            "python3-tk), or use the command-line options shown by --help.") from None
         gui_main()
         return
     if args.backup or args.confirm_backup:

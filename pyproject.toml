@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "priorfolio"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Prepare IP disclosures and preserve the evidence behind them."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,9 +15,23 @@ dependencies = []
 keywords = ["ip-disclosure", "evidence", "backup", "sha256"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: System :: Archiving :: Backup",
     "Topic :: Utilities",
 ]
 
@@ -29,7 +43,7 @@ Documentation = "https://github.com/jesse-anderson/PriorFolio#readme"
 Changelog = "https://github.com/jesse-anderson/PriorFolio/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-cov>=7,<8", "coverage[toml]>=7.10,<8", "build>=1,<2", "twine>=6,<8"]
+dev = ["pytest>=8,<10", "pytest-cov>=7,<8", "coverage[toml]>=7.10,<8", "build>=1,<2", "twine>=6,<8", "trove-classifiers>=2026.1"]
 desktop = ["pyinstaller>=6.22.3,<7"]
 
 [project.scripts]

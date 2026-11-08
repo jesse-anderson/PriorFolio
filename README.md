@@ -36,10 +36,10 @@ priorfolio --help
 `python gui.py` also works directly from a checkout. The installed desktop
 launcher is `priorfolio-gui`; `python -m priorfolio --gui` is an alternative.
 
-Once the alpha is published to PyPI, install the pinned release with:
+Install the pinned alpha release from PyPI:
 
 ```console
-python -m pip install "priorfolio==0.1.0a1"
+python -m pip install "priorfolio==0.1.0a2"
 priorfolio --gui
 ```
 
