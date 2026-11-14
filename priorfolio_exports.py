@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -148,6 +149,86 @@ def utc_now():
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8", newline="\n")
+
+
+# ---- settings shared by the CLI and the desktop app ----
+
+def settings_path():
+    """~/.priorfolio/settings.json, or the file named by PRIORFOLIO_SETTINGS."""
+    return Path(os.environ.get("PRIORFOLIO_SETTINGS") or Path.home() / ".priorfolio" / "settings.json")
+
+
+def read_settings(path=None):
+    try:
+        data = json.loads(Path(path or settings_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def update_settings(change, path=None):
+    """Re-read the file, apply change(data) in place and replace it atomically, so
+    the CLI and an open desktop app only overwrite the keys they changed."""
+    path = Path(path or settings_path())
+    data = read_settings(path)
+    change(data)
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".priorfolio-settings-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(data, stream, indent=2)
+        os.replace(temporary, path)
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)
+
+
+def clean_details(value):
+    """Only the known text fields of one project's disclosure details."""
+    if not isinstance(value, dict):
+        return {}
+    return {field: text for field, text in value.items() if field in DETAIL_FIELDS and isinstance(text, str)}
+
+
+def saved_details(path=None):
+    """Disclosure details by project path."""
+    saved = read_settings(path).get("details")
+    if not isinstance(saved, dict):
+        return {}
+    return {key: clean_details(value) for key, value in saved.items() if isinstance(value, dict)}
+
+
+def save_details(changes, path=None):
+    """Store {project path: details}, replacing the details of those projects only."""
+    def change(data):
+        details = data.get("details")
+        if not isinstance(details, dict):
+            details = data["details"] = {}
+        for key, value in changes.items():
+            details[key] = clean_details(value)
+    update_settings(change, path)
+
+
+def saved_runs(path=None):
+    """Remembered run folders, most recent first."""
+    saved = read_settings(path)
+    values = saved.get("runs")
+    values = [saved.get("last_run")] + (values if isinstance(values, list) else [])
+    return list(dict.fromkeys(Path(value).resolve() for value in values if isinstance(value, str) and value))
+
+
+def record_runs(runs, path=None):
+    """Put these run folders first in the remembered runs, keeping all others."""
+    runs = [Path(run).resolve() for run in runs]
+
+    def change(data):
+        old = data.get("runs")
+        old = [Path(value).resolve() for value in (old if isinstance(old, list) else [])
+               if isinstance(value, str) and value]
+        data["runs"] = [str(run) for run in dict.fromkeys(runs + old)]
+    update_settings(change, path)
 
 
 def public_text(value):

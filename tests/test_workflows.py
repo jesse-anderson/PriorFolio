@@ -424,3 +424,175 @@ def test_row_help_explains_a_skipped_git_status():
                         "git_error": None, "is_repo": True, "commit": "abc", "modified": 0, "untracked": 0,
                         "remote": None, "unpushed": None, "config_warning": "filter.x.clean"})
     assert "filter.x.clean" in text and "never starts them" in text
+
+
+# ------------------------------------------------- command line and shared settings
+
+def cli(*args, settings=None):
+    """Run the CLI in a subprocess. Timestamps stay off; settings go to the test file."""
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ)
+    if settings:
+        env["PRIORFOLIO_SETTINGS"] = str(settings)
+    args = [str(a) for a in args]
+    if "--select" in args:
+        args.append("--no-timestamp")  # on by default; tests stay offline
+    return subprocess.run([sys.executable, str(Path(core.__file__)), *args], env=env,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+@pytest.fixture
+def projects(tmp_path):
+    root = tmp_path / "projects"
+    write(root / "Alpha", {"work.txt": "alpha\n"})
+    write(root / "Beta", {"work.txt": "beta\n"})
+    return root
+
+
+def test_cli_details_are_saved_shown_and_reach_the_disclosure(projects, tmp_path, isolated_settings):
+    edited = cli("--root", projects, "--details", "Alpha", "--title", "Widget", "--description",
+                 "A widget  ", "--contribution", "All of it", "--period", "2025", "--references", "example.com")
+    assert edited.returncode == 0, edited.stderr
+    assert "Public title: Widget" in edited.stdout and "Description: A widget\n" in edited.stdout
+    alpha = str((projects / "Alpha").resolve())
+    assert exports.saved_details()[alpha]["description"] == "A widget"
+
+    # Changing one field keeps the others; an empty string clears a field.
+    cli("--root", projects, "--details", "1", "--period", "")
+    assert exports.saved_details()[alpha] == {"title": "Widget", "description": "A widget",
+                                              "contribution": "All of it", "period": "", "references": "example.com"}
+    shown = cli("--root", projects, "--details", "all")
+    assert "Work dates or period: [not set]" in shown.stdout and "[not set; uses Beta]" in shown.stdout
+
+    made = cli("--root", projects, "--select", "all", "--no-snapshot", "--out", tmp_path / "runs")
+    assert made.returncode == 0, made.stderr
+    assert "no description or contribution in their disclosure: Beta." in made.stderr
+    (run,) = (tmp_path / "runs").iterdir()
+    disclosure = (run / "disclosure.md").read_text(encoding="utf-8")
+    assert "## 1. Widget" in disclosure and "**My contribution:** All of it" in disclosure
+    assert "## 2. Beta" in disclosure
+
+
+def test_cli_details_rejects_bad_use(projects):
+    many = cli("--root", projects, "--details", "all", "--title", "Same")
+    assert many.returncode != 0 and "choose one to change" in many.stderr
+    assert exports.saved_details() == {}
+    alone = cli("--root", projects, "--title", "No project")
+    assert alone.returncode == 2 and "require --details" in alone.stderr
+    unknown = cli("--root", projects, "--details", "Gamma")
+    assert unknown.returncode != 0 and "no such project: Gamma" in unknown.stderr
+
+
+def test_cli_details_export_edit_import_round_trip(projects, tmp_path):
+    cli("--root", projects, "--details", "Beta", "--title", "Kept title")
+    target = tmp_path / "details.json"
+    exported = cli("--root", projects, "--export-details", target)
+    assert exported.returncode == 0, exported.stderr
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert [p["name"] for p in data["projects"]] == ["Alpha", "Beta"]
+    assert data["projects"][1]["title"] == "Kept title"
+    assert cli("--root", projects, "--export-details", target).returncode != 0  # never overwrites
+
+    data["projects"][0]["description"] = "Imported description"
+    del data["projects"][1]["title"]  # left out: the saved title stays
+    data["projects"][1]["contribution"] = "Imported contribution"
+    target.write_text(json.dumps(data), encoding="utf-8")
+    imported = cli("--import-details", target)
+    assert imported.returncode == 0 and "2 project(s)" in imported.stdout, imported.stderr
+    saved = exports.saved_details()
+    assert saved[str((projects / "Alpha").resolve())]["description"] == "Imported description"
+    beta = saved[str((projects / "Beta").resolve())]
+    assert beta["title"] == "Kept title" and beta["contribution"] == "Imported contribution"
+
+
+@pytest.mark.parametrize("content, message", [
+    ("not json", "not valid JSON"),
+    ('{"format": "other", "projects": []}', "not a PriorFolio details file"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"name": "x"}]}', 'needs a "path"'),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "PROJECT", "contributions": "x"}]}',
+     "unknown field(s) contributions"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "PROJECT", "title": 1}]}', "title must be text"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "MISSING"}]}', "not a folder"),
+])
+def test_cli_import_details_rejects_bad_files_without_saving(projects, tmp_path, content, message):
+    alpha = str((projects / "Alpha").resolve())
+    content = content.replace("PROJECT", json.dumps(alpha)[1:-1]).replace(
+        "MISSING", json.dumps(str(tmp_path / "gone"))[1:-1])
+    target = tmp_path / "details.json"
+    target.write_text(content, encoding="utf-8")
+    result = cli("--import-details", target)
+    assert result.returncode != 0 and message in result.stderr and "Traceback" not in result.stderr
+    assert exports.saved_details() == {}
+
+
+def test_cli_runs_lists_remembered_runs_and_backup_state(projects, tmp_path):
+    assert "No remembered runs." in cli("--runs").stdout
+    for name in ("Alpha", "Beta"):
+        assert cli("--root", projects, "--select", name, "--out", tmp_path / "runs").returncode == 0
+    first, second = sorted((tmp_path / "runs").iterdir())
+    target = tmp_path / "backup.zip"
+    assert cli("--backup", first, "--destination", target).returncode == 0
+    assert cli("--confirm-backup", first, "--backup-method", "cloud").returncode == 0
+    shutil.rmtree(second)
+    listed = cli("--runs").stdout.splitlines()
+    assert listed[0].startswith("FOLDER NOT FOUND") and listed[0].endswith(str(second.resolve()))
+    assert listed[1].startswith("confirmed by you") and "need a remote backup" not in "\n".join(listed)
+
+
+def test_desktop_sees_details_and_runs_saved_by_the_cli(desktop, tmp_path):
+    root = tmp_path / "projects"
+    settings = gui.SETTINGS
+    assert cli("--root", root, "--details", "Alpha", "--title", "From the CLI",
+               settings=settings).returncode == 0
+    assert cli("--root", root, "--select", "Beta", "--no-snapshot", "--out", tmp_path / "cli-runs",
+               settings=settings).returncode == 0
+    (cli_run,) = (tmp_path / "cli-runs").iterdir()
+    assert cli_run.resolve() in desktop.pending_runs()
+
+    button(desktop, "Rescan").invoke()
+    settle(desktop)
+    alpha = next(p for p in desktop.projects if p["name"] == "Alpha")
+    assert alpha["disclosure"]["title"] == "From the CLI"
+
+    # Saving from the window keeps what the CLI wrote.
+    generate(desktop, "Alpha")
+    assert "From the CLI" in desktop.table_text.get("1.0", "end")
+    saved = json.loads(settings.read_text(encoding="utf-8"))
+    assert str(cli_run.resolve()) in saved["runs"]
+    assert saved["details"][alpha["path"]]["title"] == "From the CLI"
+    assert saved["folders"] == [str(root)]
+
+
+def test_cli_verify_remembers_runs_whose_evidence_verifies(projects, tmp_path):
+    made = cli("--root", projects, "--select", "Alpha", "--out", tmp_path / "runs",
+               settings=tmp_path / "maker.json")  # a run made elsewhere, e.g. a restored copy
+    assert made.returncode == 0, made.stderr
+    (run,) = (tmp_path / "runs").iterdir()
+
+    wrong = cli("--verify", run, "--expect", "0" * 64)
+    assert wrong.returncode == 1 and "remembered" not in wrong.stdout
+    assert exports.saved_runs() == []
+
+    # Work continued on the project: the run itself is intact, so it is remembered.
+    (projects / "Alpha" / "work.txt").write_text("changed\n")
+    changed = cli("--verify", run, "--against-disk")
+    assert changed.returncode == 1 and "Alpha: on disk changed: work.txt" in changed.stdout
+    assert "This run is remembered" in changed.stdout
+    assert exports.saved_runs() == [run.resolve()]
+    assert cli("--runs").stdout.startswith("BACKUP REQUIRED")
+
+
+def test_cli_verify_does_not_remember_a_damaged_run(projects, tmp_path):
+    assert cli("--root", projects, "--select", "Alpha", "--out", tmp_path / "runs").returncode == 0
+    (run,) = (tmp_path / "runs").iterdir()
+    settings = tmp_path / "fresh.json"
+    (snapshot,) = (run / "snapshots").glob("*.zip")
+    snapshot.write_bytes(snapshot.read_bytes() + b"x")
+    damaged = cli("--verify", run, "--against-disk", settings=settings)
+    assert damaged.returncode == 1 and "snapshot zip does not match" in damaged.stdout
+    assert "remembered" not in damaged.stdout and not settings.exists()
+
+    unreadable = cli("--verify", tmp_path, settings=settings)
+    assert unreadable.returncode == 1 and not settings.exists()

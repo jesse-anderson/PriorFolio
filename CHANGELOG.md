@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- The command line can now set, show, export and import disclosure details
+  (`--details` with `--title`, `--description`, `--contribution`, `--period`
+  and `--references`; `--export-details`, `--import-details`).
+- Command-line runs use the disclosure details saved in
+  `~/.priorfolio/settings.json`. Previously they ignored them, so every field
+  except the title read "[Not provided]".
+- Command-line runs are remembered with the desktop app's runs, so its backup
+  reminders include them. `--runs` lists remembered runs and their backup state.
+- `--verify` remembers a run whose evidence verifies, as the desktop app's
+  Verify a run does. Changes in the local projects (`--against-disk`) do not
+  prevent this; a failed check or a different `--expect` hash does.
+- The desktop app and the command line can change settings while the other is
+  open without overwriting each other's details or runs.
+- `PRIORFOLIO_SETTINGS` names a different settings file.
+
 ## 0.1.0a3 - signed timestamps and cloud backup copies
 
 - Signed timestamps are on by default (`--no-timestamp` to stay offline), and
