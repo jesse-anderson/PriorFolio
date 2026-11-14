@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -263,6 +264,7 @@ class App(tk.Tk):
         self.help_window = None
         self.copies_window = None
         self.pane_job = None
+        self.sash_limit = {}  # pane height -> furthest divider position Tk allows
 
         self.out_base = Path.home() / "PriorFolio" / "runs"
         self.snapshot_var = tk.BooleanVar(value=True)
@@ -428,14 +430,21 @@ class App(tk.Tk):
 
         upper = ttk.Frame(panes)
         panes.add(upper, weight=3)
+        # Size rows and columns from the fonts, not fixed pixels: high-DPI desktops
+        # use taller fonts than the theme's default row height and column widths.
+        body, heading = tkfont.nametofont("TkDefaultFont"), tkfont.nametofont("TkHeadingFont")
+        self.row_height = body.metrics("linespace") + 6
+        ttk.Style(self).configure("Treeview", rowheight=self.row_height)
         self.tree = ttk.Treeview(upper, columns=tuple(COLUMN_HELP), show="headings", selectmode="browse")
-        for col, text, width, stretch in (
-            ("sel", "", 34, False), ("name", "Project", 320, True),
-            ("commit", "Commit", 100, False), ("date", "Commit date", 100, False),
-            ("state", "State", 420, True),
+        for col, text, sample, stretch in (
+            ("sel", "", CHECKED, False), ("name", "Project", "x" * 28, True),
+            ("commit", "Commit", "0123456789", False), ("date", "Commit date", "2026-12-31", False),
+            ("state", "State", "x" * 36, True),
         ):
+            width = max(body.measure(sample), heading.measure(text)) + 16
             self.tree.heading(col, text=text, anchor="w")
-            self.tree.column(col, width=width, stretch=stretch, anchor="w")
+            self.tree.column(col, width=width, minwidth=20 if stretch else width,
+                             stretch=stretch, anchor="w")
         background = ttk.Style(self).lookup("Treeview", "background") or "white"
         dark = sum(self.winfo_rgb(background)) < 3 * 32768
         self.tree.tag_configure("nohash", foreground="#ff9090" if dark else "#b00020")
@@ -552,12 +561,20 @@ class App(tk.Tk):
         sash = max(1, lower.winfo_y() - upper.winfo_height())
         text_request = max(self.email_text.winfo_reqheight(), self.table_text.winfo_reqheight())
         minimum_lower = lower.winfo_reqheight() - text_request + 72
-        minimum_upper = 96
+        # Heading plus three project rows, at whatever size the fonts are.
+        minimum_upper = 4 * self.row_height + 16
         maximum_upper = max(minimum_upper, available - sash - minimum_lower)
         current = self.panes.sashpos(0)
         target = max(minimum_upper, min(current, maximum_upper))
+        # When the minimums do not both fit, Tk clamps the divider. Asking for an
+        # unreachable position again on every <Configure> would never settle.
+        limit = self.sash_limit.get(available)
+        if limit is not None:
+            target = min(target, limit)
         if current != target:
-            self.panes.sashpos(0, target)
+            reached = int(self.panes.sashpos(0, target))
+            if reached < target:
+                self.sash_limit[available] = reached
 
     def add_tab(self, title, copy_help):
         frame = ttk.Frame(self.tabs)

@@ -2,6 +2,7 @@ import gc
 import json
 import time
 import tkinter as tk
+import tkinter.font
 
 import pytest
 
@@ -109,6 +110,52 @@ def test_window_fits_on_the_screen(app):
         widget = button(app, label)
         right_edge = widget.winfo_rootx() + widget.winfo_width()
         assert right_edge <= app.winfo_rootx() + app.winfo_width(), label
+
+
+@pytest.mark.parametrize("size", [None, 24])
+def test_rows_and_columns_fit_their_text(size, monkeypatch, request):
+    """Large or high-DPI fonts must not be clipped by fixed row heights or column widths."""
+    if size:
+        create = tk.Tk.__init__
+
+        def large_fonts(self, *args, **kwargs):
+            create(self, *args, **kwargs)
+            for name in ("TkDefaultFont", "TkHeadingFont"):
+                tk.font.nametofont(name, root=self).configure(size=size)
+
+        monkeypatch.setattr(tk.Tk, "__init__", large_fonts)
+    app = request.getfixturevalue("app")
+    body = tk.font.nametofont("TkDefaultFont")
+    heading = tk.font.nametofont("TkHeadingFont")
+    app.update_idletasks()
+    row = app.tree.get_children()[0]
+    app.tree.see(row)
+    app.update()
+    assert app.tree.bbox(row)[3] >= body.metrics("linespace")
+    for col in ("commit", "date"):
+        value = app.tree.set(row, col)
+        needed = max(body.measure(value), heading.measure(app.tree.heading(col, "text")))
+        assert app.tree.column(col, "width") >= needed, col
+
+
+def test_window_too_short_for_both_panes_still_settles(app, monkeypatch):
+    """When the panes' minimums cannot both fit, the divider must settle (#2)."""
+    calls = []
+    fit = gui.App.fit_panes
+
+    def counted(self):
+        calls.append(self.panes.sashpos(0))
+        if len(calls) <= 200:  # past this, stop the loop so the test fails, not hangs
+            fit(self)
+
+    monkeypatch.setattr(gui.App, "fit_panes", counted)
+    app.minsize(1, 1)
+    app.geometry(f"{app.winfo_width()}x300")
+    app.update()
+    assert len(calls) <= 200, f"fit_panes looped; divider positions: {calls[-5:]}"
+    calls.clear()
+    app.update()
+    assert len(calls) <= 1
 
 
 def test_clicking_rows_ticks_and_unticks_them(app):
