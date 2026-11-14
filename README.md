@@ -107,8 +107,9 @@ Generated document previews are read-only and match the saved exports. Edit
 **Project details** and generate a new run to change a disclosure. Opening another
 run switches the documents and backup actions together.
 
-Runs default to `~/PriorFolio/runs/`. GUI sources and disclosure details are
-stored privately in `~/.priorfolio/settings.json`. There is no telemetry.
+Runs default to `~/PriorFolio/runs/`. GUI sources, disclosure details and the
+list of runs are stored privately in `~/.priorfolio/settings.json`, which the
+GUI and the command line share. There is no telemetry.
 
 ## What can be shared?
 
@@ -142,6 +143,7 @@ priorfolio --root D:\projects --select "1,4-7,example-project" --out D:\records
 priorfolio --backup RUN_FOLDER --destination E:\Offline\PriorFolio-full.zip
 priorfolio --backup RUN_FOLDER --destination D:\CloudSync\PriorFolio-cloud.zip --withhold-secrets
 priorfolio --confirm-backup RUN_FOLDER --backup-method cloud
+priorfolio --runs
 ```
 
 `--withhold-secrets` leaves out files whose names suggest secrets;
@@ -154,7 +156,23 @@ hash-only record that cannot provide a complete source backup. `--no-timestamp`
 keeps the run offline. Every new run is read back and verified before it is
 reported as finished. `--add` alone scans only the supplied
 projects. With no roots or individual projects, the CLI scans the current folder.
-Disclosure details can currently be authored through the GUI.
+`--runs` lists the runs remembered by the GUI and the CLI with their backup
+state. Runs are remembered when they are generated, and when `--verify` finds
+their evidence intact.
+
+Disclosure details are shared with the GUI and used by every run. Set them for
+one project, show them, or edit many at once in a JSON file:
+
+```console
+priorfolio --root D:\projects --details example-project --title "Example" --contribution "Sole author"
+priorfolio --root D:\projects --details all
+priorfolio --root D:\projects --export-details D:\details.json
+priorfolio --import-details D:\details.json
+```
+
+`--details` takes the same selection syntax as `--select`. The other fields are
+`--description`, `--period` and `--references`; an empty string clears a field.
+`--import-details` saves the fields each entry lists and keeps the rest.
 
 ## Verify and restore
 

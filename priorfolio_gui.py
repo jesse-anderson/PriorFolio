@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Jesse Anderson
 """Desktop front end. Run: priorfolio --gui or python -m priorfolio_gui."""
-import json
 import os
 import queue
 import threading
 import subprocess
 import sys
-import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -18,7 +16,7 @@ import priorfolio_exports as exports
 
 CHECKED, UNCHECKED = "☑", "☐"
 HERE = Path(__file__).resolve().parent
-SETTINGS = Path.home() / ".priorfolio" / "settings.json"
+SETTINGS = exports.settings_path()
 TIP_DELAY_MS = 450
 # How each kind of source is labelled in the list at the top of the window.
 KIND_LABEL = {"folders": "Folder of projects", "projects": "Single project"}
@@ -287,64 +285,44 @@ class App(tk.Tk):
     # ---- settings ----
 
     def load_sources(self):
-        try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
-            sources = []
-            for kind in KIND_LABEL:
-                values = saved.get(kind, [])
-                if isinstance(values, list):
-                    sources.extend((kind, path) for path in values
-                                   if isinstance(path, str) and path and Path(path).is_dir())
-        except (OSError, ValueError, AttributeError, TypeError):
-            sources = []
+        saved = exports.read_settings(SETTINGS)
+        sources = []
+        for kind in KIND_LABEL:
+            values = saved.get(kind, [])
+            if isinstance(values, list):
+                sources.extend((kind, path) for path in values
+                               if isinstance(path, str) and path and Path(path).is_dir())
         return sources
 
     def load_details(self):
-        try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8")).get("details", {})
-            return {key: {field: text for field, text in value.items()
-                          if field in exports.DETAIL_FIELDS and isinstance(text, str)}
-                    for key, value in saved.items() if isinstance(value, dict)}
-        except (OSError, ValueError, AttributeError, TypeError):
-            return {}
+        return exports.saved_details(SETTINGS)
 
     def save_sources(self):
-        data = {kind: [p for k, p in self.sources if k == kind] for kind in KIND_LABEL}
-        data["details"] = self.project_details
-        data["runs"] = [str(path) for path in self.runs]
-        if self.out_dir:
-            data["last_run"] = str(self.out_dir)
-        temporary = None
+        """Save sources and runs. Details are saved per project when edited, and
+        runs recorded meanwhile by the command line are kept."""
+        def change(data):
+            for kind in KIND_LABEL:
+                data[kind] = [p for k, p in self.sources if k == kind]
+            if self.out_dir:
+                data["last_run"] = str(self.out_dir)
         try:
-            SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SETTINGS.parent,
-                                             prefix=".priorfolio-settings-", suffix=".tmp", delete=False) as stream:
-                temporary = Path(stream.name)
-                json.dump(data, stream, indent=2)
-            os.replace(temporary, SETTINGS)
+            exports.update_settings(change, SETTINGS)
+            exports.record_runs(self.runs, SETTINGS)
         except OSError:
             self.status_var.set("Settings could not be saved. This session still works.")
-        finally:
-            if temporary:
-                temporary.unlink(missing_ok=True)
 
     def restore_last_run(self):
         try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
-            self.activate_run(Path(saved["last_run"]))
+            self.activate_run(Path(exports.read_settings(SETTINGS)["last_run"]))
         except (OSError, ValueError, KeyError, TypeError, sa.ToolError):
             self.update_pending_message()
 
     def load_runs(self):
-        try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
-            values = saved.get("runs", [])
-            if not isinstance(values, list):
-                values = []
-            values = [saved.get("last_run")] + values
-            return list(dict.fromkeys(Path(value).resolve() for value in values if isinstance(value, str) and value))
-        except (OSError, ValueError, AttributeError, TypeError):
-            return []
+        return exports.saved_runs(SETTINGS)
+
+    def all_runs(self):
+        """This session's runs, then any the command line recorded since."""
+        return list(dict.fromkeys(self.runs + exports.saved_runs(SETTINGS)))
 
     @staticmethod
     def set_text(widget, content):
@@ -375,7 +353,7 @@ class App(tk.Tk):
     def pending_runs(self):
         # A deleted run cannot be backed up any more, so it must not block closing.
         # A run on a disconnected drive is remembered and counts again once it returns.
-        return [path for path in self.runs if path.is_dir()
+        return [path for path in self.all_runs() if path.is_dir()
                 and exports.backup_status(path).get("state") != "confirmed_by_user"]
 
     def update_pending_message(self):
@@ -706,6 +684,8 @@ class App(tk.Tk):
         self.work(lambda: sa.scan_roots(roots, singles, log=self.log), self.show_projects)
 
     def show_projects(self, projects):
+        # Pick up details entered with the command line while this window was open.
+        self.project_details.update(exports.saved_details(SETTINGS))
         self.projects = projects
         self.checked.clear()
         self.tree.delete(*self.tree.get_children())
@@ -773,7 +753,10 @@ class App(tk.Tk):
             details = {key: widget.get("1.0", "end-1c").strip() for key, widget in fields.items()}
             project["disclosure"] = details
             self.project_details[project["path"]] = details
-            self.save_sources()
+            try:
+                exports.save_details({project["path"]: details}, SETTINGS)
+            except OSError:
+                self.status_var.set("Details could not be saved. They apply to this session only.")
             win.destroy()
 
         ttk.Button(frame, text="Save details", command=save).pack(anchor="e")
@@ -938,7 +921,8 @@ class App(tk.Tk):
     def show_history(self):
         if self.busy:
             return
-        if not self.runs:
+        paths = self.all_runs()
+        if not paths:
             messagebox.showinfo("Previous runs", "No saved runs yet. Generate a run or use Verify a run to open one.")
             return
         win = tk.Toplevel(self)
@@ -948,8 +932,7 @@ class App(tk.Tk):
         frame = ttk.Frame(win, padding=12)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Open a run to view its saved documents and finish its backup.").pack(anchor="w")
-        rows = tk.Listbox(frame, width=85, height=min(12, len(self.runs)), exportselection=False)
-        paths = list(self.runs)
+        rows = tk.Listbox(frame, width=85, height=min(12, len(paths)), exportselection=False)
         labels = {"backup_required": "BACKUP REQUIRED", "exported": "EXPORTED - remote check pending",
                   "confirmed_by_user": "Confirmed by you"}
         for path in paths:

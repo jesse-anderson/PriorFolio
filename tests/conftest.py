@@ -33,6 +33,14 @@ def isolated_git(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_settings(tmp_path_factory, monkeypatch):
+    """Keep the CLI, including subprocesses, away from the real ~/.priorfolio."""
+    path = tmp_path_factory.mktemp("settings") / "settings.json"
+    monkeypatch.setenv("PRIORFOLIO_SETTINGS", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
 def no_network(monkeypatch):
     """Timestamps are on by default. Route any accidental request, including from
     CLI subprocesses, to a closed local port. PRIORFOLIO_NETWORK=1 allows live tests."""

@@ -1265,6 +1265,21 @@ def build_parser():
     mode.add_argument("--confirm-backup", type=Path, metavar="RUN_FOLDER",
                       help="record that you checked the received email or uploaded cloud copy")
     ap.add_argument("--backup-method", choices=("email", "cloud"))
+    details = ap.add_argument_group(
+        "disclosure details", "Saved in ~/.priorfolio/settings.json, shared with the desktop app, "
+                              "and used by every later run")
+    mode.add_argument("--details", metavar="PROJECT",
+                      help="show the saved details of the selected projects (same syntax as --select), "
+                           "or change one project's details with the options below")
+    for field, label in DETAIL_OPTIONS:
+        details.add_argument("--" + field, metavar="TEXT",
+                             help=f"with --details: set {label.lower()}; an empty string clears it")
+    mode.add_argument("--export-details", type=Path, metavar="FILE",
+                      help="write the details of the scanned projects (or --select) to a new JSON file")
+    mode.add_argument("--import-details", type=Path, metavar="FILE",
+                      help="save details from a JSON file written by --export-details")
+    mode.add_argument("--runs", action="store_true",
+                      help="list remembered runs and their remote backup state")
     return ap
 
 
@@ -1282,6 +1297,8 @@ def main():
         ap.error("--withhold and --withhold-secrets require --backup")
     if bool(args.confirm_backup) != bool(args.backup_method):
         ap.error("--confirm-backup and --backup-method must be used together")
+    if not args.details and any(getattr(args, f) is not None for f, _ in DETAIL_OPTIONS):
+        ap.error("--" + ", --".join(f for f, _ in DETAIL_OPTIONS) + " require --details")
 
     try:
         run_cli(args)
@@ -1302,6 +1319,68 @@ def open_gui():
                         "does not include. Install your system's Tk package (for example "
                         "python3-tk), or use the command-line options shown by priorfolio --help.") from None
     start()
+
+
+# Disclosure detail fields as the desktop app labels them, in display order.
+DETAIL_OPTIONS = (("title", "Public title"), ("description", "Description"),
+                  ("contribution", "My contribution"), ("period", "Work dates or period"),
+                  ("references", "References"))
+
+
+def print_details(project):
+    print(f"{project['name']}  ({project['path']})")
+    details = project.get("disclosure", {})
+    for field, label in DETAIL_OPTIONS:
+        value = details.get(field, "")
+        shown = value.replace("\n", "\n    ") if value else (
+            f"[not set; uses {project['name']}]" if field == "title" else "[not set]")
+        print(f"  {label}: {shown}")
+
+
+def export_details(projects, path):
+    entries = [{"name": p["name"], "path": p["path"],
+                **{field: p["disclosure"].get(field, "") for field, _ in DETAIL_OPTIONS}}
+               for p in projects]
+    data = {"format": "priorfolio-details-v1", "projects": entries}
+    try:
+        with open(path, "x", encoding="utf-8", newline="\n") as stream:
+            json.dump(data, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+    except FileExistsError:
+        raise ToolError(f"{path} already exists; choose a new file name.") from None
+
+
+def import_details(path):
+    """Read a details file and return {project path: details}. Fields that an entry
+    leaves out keep their saved values."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ToolError(f"not a file: {path}") from None
+    except (ValueError, UnicodeDecodeError) as e:
+        raise ToolError(f"{path} is not valid JSON: {e}") from None
+    if not isinstance(data, dict) or data.get("format") != "priorfolio-details-v1" \
+            or not isinstance(data.get("projects"), list):
+        raise ToolError(f"{path} is not a PriorFolio details file (see --export-details).")
+    fields = {field for field, _ in DETAIL_OPTIONS}
+    changes = {}
+    for i, entry in enumerate(data["projects"], 1):
+        where = f"{path}, project {i}"
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"]:
+            raise ToolError(f"{where}: needs a \"path\".")
+        unknown = set(entry) - fields - {"name", "path"}
+        if unknown:
+            raise ToolError(f"{where}: unknown field(s) {', '.join(sorted(unknown))}; "
+                            f"use {', '.join(f for f, _ in DETAIL_OPTIONS)}.")
+        bad = [f for f in fields & set(entry) if not isinstance(entry[f], str)]
+        if bad:
+            raise ToolError(f"{where}: {', '.join(sorted(bad))} must be text.")
+        if not Path(entry["path"]).is_dir():
+            raise ToolError(f"{where}: not a folder: {entry['path']}")
+        if entry["path"] in changes:
+            raise ToolError(f"{where}: {entry['path']} is listed twice.")
+        changes[entry["path"]] = {f: entry[f].strip() for f in fields & set(entry)}
+    return changes
 
 
 def gui_main():
@@ -1354,6 +1433,32 @@ def run_cli(args):
             confirm_backup(args.confirm_backup, args.backup_method)
             print("Remote backup check recorded as confirmed by you; delivery was not verified automatically.")
         return
+    if args.runs or args.import_details:
+        from priorfolio_exports import backup_status, saved_details, save_details, saved_runs
+        if args.import_details:
+            changes = import_details(args.import_details)
+            saved = saved_details()
+            save_details({key: {**saved.get(key, {}), **value} for key, value in changes.items()})
+            print(f"Saved details for {len(changes)} project(s).")
+            return
+        runs = saved_runs()
+        if not runs:
+            print("No remembered runs.")
+            return
+        labels = {"backup_required": "BACKUP REQUIRED", "exported": "EXPORTED - remote check pending",
+                  "confirmed_by_user": "confirmed by you"}
+        pending = 0
+        for run in runs:
+            if run.is_dir():
+                state = backup_status(run).get("state", "backup_required")
+                pending += state != "confirmed_by_user"
+                print(f"{labels[state]:<32}  {run}")
+            else:
+                print(f"{'FOLDER NOT FOUND':<32}  {run}")
+        if pending:
+            print(f"\n{pending} run(s) still need a remote backup: export with --backup, "
+                  "then record it with --confirm-backup.")
+        return
     if args.verify:
         summary = run_summary(args.verify, signatures=True)
         if summary:
@@ -1382,6 +1487,17 @@ def run_cli(args):
         if summary and not args.expect:
             print("Compare the bundle hash above with the one in your email or agreement, "
                   "or pass it with --expect.")
+        # Remember a run whose evidence verifies, as the desktop app does. Changes in the
+        # local project folders since the run do not count against the run itself.
+        intact = summary and (not problems or args.against_disk and not verify_run(
+            args.verify, expect_bundle=args.expect, metadata_only=args.metadata_only))
+        if intact:
+            try:
+                from priorfolio_exports import record_runs
+                record_runs([args.verify])
+                print("This run is remembered; priorfolio --runs shows its backup state.")
+            except OSError as e:
+                print(f"Note: this run could not be added to the remembered runs ({e}).", file=sys.stderr)
         sys.exit(1 if problems else 0)
 
     roots = [r.resolve() for r in (args.root or ([] if args.add else [Path.cwd()]))]
@@ -1393,6 +1509,36 @@ def run_cli(args):
     projects = scan_roots(roots, args.add)
     if not projects:
         raise ToolError("no projects found")
+    from priorfolio_exports import saved_details, save_details
+    details = saved_details()
+    for p in projects:
+        p["disclosure"] = dict(details.get(p["path"], {}))
+
+    if args.details or args.export_details:
+        try:
+            chosen = parse_selection(args.details or args.select or "all", projects)
+        except ValueError as e:
+            raise ToolError(str(e)) from None
+        if not chosen:
+            raise ToolError("nothing selected")
+        if args.export_details:
+            export_details(chosen, args.export_details)
+            print(f"Wrote details of {len(chosen)} project(s) to {args.export_details}. "
+                  "Edit it, then save it with --import-details.")
+            return
+        edits = {f: getattr(args, f).strip() for f, _ in DETAIL_OPTIONS if getattr(args, f) is not None}
+        if edits:
+            if len(chosen) != 1:
+                raise ToolError(f"--details selects {len(chosen)} projects; choose one to change.")
+            project = chosen[0]
+            project["disclosure"] = {**project["disclosure"], **edits}
+            save_details({project["path"]: project["disclosure"]})
+        for i, project in enumerate(chosen):
+            if i:
+                print()
+            print_details(project)
+        return
+
     print_list(projects)
     if args.list:
         return
@@ -1413,8 +1559,19 @@ def run_cli(args):
 
     if args.timestamp:
         print(TIMESTAMP_NOTICE + " Use --no-timestamp to skip.", file=sys.stderr)
+    missing = [p["name"] for p in chosen if not any(p["disclosure"].get(f) for f in
+                                                     ("description", "contribution"))]
+    if missing:
+        print(f"Note: {len(missing)} project(s) have no description or contribution in their "
+              "disclosure: " + ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
+              + ". Add them with --details.", file=sys.stderr)
     run = generate(chosen, args.out, args.snapshot, args.timestamp,
                    log=lambda m: print(m, file=sys.stderr))
+    try:
+        from priorfolio_exports import record_runs
+        record_runs([run["out_dir"]])
+    except OSError as e:
+        print(f"Note: this run could not be added to the remembered runs ({e}).", file=sys.stderr)
     print(f"\nWrote {run['out_dir']}")
     print(f"Bundle SHA-256 (evidence.json): {run['bundle']}")
     print("Self-check: the new run was read back and verifies.")
