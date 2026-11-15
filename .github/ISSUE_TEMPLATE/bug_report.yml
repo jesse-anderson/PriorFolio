@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the app or the command line behaves wrongly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use invented project names and example.com addresses. Do not attach real evidence bundles, settings files, credentials, or screenshots of personal projects.
+        Security problems go through [private reporting](https://github.com/jesse-anderson/PriorFolio/security/advisories/new), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: PriorFolio version and how it was installed, or the commit if running from `main`.
+      placeholder: 0.1.0a3 (uv tool install), and current main
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, desktop or display scaling, Python and Tk versions.
+      placeholder: Windows 10, 150% scaling, Python 3.12.4, Tk 8.6.13
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Desktop app
+        - Command line
+        - Disclosure output
+        - Evidence, hashing or verification
+        - Backups or timestamps
+        - Packaging or install
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: found
+    attributes:
+      label: What happens
+      description: What you did, what you expected, and what happened instead. Include exact commands and error text.
+    validations:
+      required: true
+  - type: textarea
+    id: cause
+    attributes:
+      label: Cause
+      description: Optional. Where in the code the problem comes from, if you know.
+  - type: textarea
+    id: fix
+    attributes:
+      label: Fix
+      description: Optional. The change you would make.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The checks that show it is fixed, ideally as tests that fail today.
+      placeholder: |
+        - Rows are at least the font's line height tall, at the default font and at 24 pt.

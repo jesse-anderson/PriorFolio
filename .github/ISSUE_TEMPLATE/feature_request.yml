@@ -1,0 +1,43 @@
+name: Feature request
+description: Something PriorFolio should do that it doesn't yet.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use invented project names and example.com addresses. Keep the shareable disclosure and the private evidence separate when proposing new fields.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Desktop app
+        - Command line
+        - Disclosure output
+        - Evidence, hashing or verification
+        - Backups or timestamps
+        - Packaging or install
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's missing
+      description: What you're trying to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The change you'd like, including any new options, fields or files.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The checks that show it works.
