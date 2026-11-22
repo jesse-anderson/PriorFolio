@@ -2,6 +2,7 @@
 import gc
 import hashlib
 import json
+import os
 import shutil
 import tkinter as tk
 import zipfile
@@ -424,3 +425,306 @@ def test_row_help_explains_a_skipped_git_status():
                         "git_error": None, "is_repo": True, "commit": "abc", "modified": 0, "untracked": 0,
                         "remote": None, "unpushed": None, "config_warning": "filter.x.clean"})
     assert "filter.x.clean" in text and "never starts them" in text
+
+
+# ------------------------------------------------- command line and shared settings
+
+def cli(*args, settings=None, cwd=None):
+    """Run the CLI in a subprocess. Timestamps stay off; settings go to the test file."""
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ)
+    if settings:
+        env["PRIORFOLIO_SETTINGS"] = str(settings)
+    args = [str(a) for a in args]
+    if "--select" in args:
+        args.append("--no-timestamp")  # on by default; tests stay offline
+    return subprocess.run([sys.executable, str(Path(core.__file__).resolve()), *args], env=env, cwd=cwd,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+@pytest.fixture
+def projects(tmp_path):
+    root = tmp_path / "projects"
+    write(root / "Alpha", {"work.txt": "alpha\n"})
+    write(root / "Beta", {"work.txt": "beta\n"})
+    return root
+
+
+def test_cli_details_are_saved_shown_and_reach_the_disclosure(projects, tmp_path, isolated_settings):
+    edited = cli("--root", projects, "--details", "Alpha", "--title", "Widget", "--description",
+                 "A widget  ", "--contribution", "All of it", "--period", "2025", "--references", "example.com")
+    assert edited.returncode == 0, edited.stderr
+    assert "Public title: Widget" in edited.stdout and "Description: A widget\n" in edited.stdout
+    alpha = str((projects / "Alpha").resolve())
+    assert exports.saved_details()[alpha]["description"] == "A widget"
+
+    # Changing one field keeps the others; an empty string clears a field.
+    cli("--root", projects, "--details", "1", "--period", "")
+    assert exports.saved_details()[alpha] == {"title": "Widget", "description": "A widget",
+                                              "contribution": "All of it", "period": "", "references": "example.com"}
+    shown = cli("--root", projects, "--details", "all")
+    assert "Work dates or period: [not set]" in shown.stdout and "[not set; uses Beta]" in shown.stdout
+
+    made = cli("--root", projects, "--select", "all", "--no-snapshot", "--out", tmp_path / "runs")
+    assert made.returncode == 0, made.stderr
+    assert "no description or contribution in their disclosure: Beta." in made.stderr
+    (run,) = (tmp_path / "runs").iterdir()
+    disclosure = (run / "disclosure.md").read_text(encoding="utf-8")
+    assert "## 1. Widget" in disclosure and "**My contribution:** All of it" in disclosure
+    assert "## 2. Beta" in disclosure
+
+
+def test_cli_details_rejects_bad_use(projects):
+    many = cli("--root", projects, "--details", "all", "--title", "Same")
+    assert many.returncode != 0 and "choose one to change" in many.stderr
+    assert exports.saved_details() == {}
+    alone = cli("--root", projects, "--title", "No project")
+    assert alone.returncode == 2 and "require --details" in alone.stderr
+    unknown = cli("--root", projects, "--details", "Gamma")
+    assert unknown.returncode != 0 and "no such project: Gamma" in unknown.stderr
+
+
+def test_cli_details_export_edit_import_round_trip(projects, tmp_path):
+    cli("--root", projects, "--details", "Beta", "--title", "Kept title")
+    target = tmp_path / "details.json"
+    exported = cli("--root", projects, "--export-details", target)
+    assert exported.returncode == 0, exported.stderr
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert [p["name"] for p in data["projects"]] == ["Alpha", "Beta"]
+    assert data["projects"][1]["title"] == "Kept title"
+    assert cli("--root", projects, "--export-details", target).returncode != 0  # never overwrites
+
+    data["projects"][0]["description"] = "Imported description"
+    del data["projects"][1]["title"]  # left out: the saved title stays
+    data["projects"][1]["contribution"] = "Imported contribution"
+    target.write_text(json.dumps(data), encoding="utf-8")
+    imported = cli("--import-details", target)
+    assert imported.returncode == 0 and "2 project(s)" in imported.stdout, imported.stderr
+    saved = exports.saved_details()
+    assert saved[str((projects / "Alpha").resolve())]["description"] == "Imported description"
+    beta = saved[str((projects / "Beta").resolve())]
+    assert beta["title"] == "Kept title" and beta["contribution"] == "Imported contribution"
+
+
+@pytest.mark.parametrize("content, message", [
+    ("not json", "not valid JSON"),
+    ('{"format": "other", "projects": []}', "not a PriorFolio details file"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"name": "x"}]}', 'needs a "path"'),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "PROJECT", "contributions": "x"}]}',
+     "unknown field(s) contributions"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "PROJECT", "title": 1}]}', "title must be text"),
+    ('{"format": "priorfolio-details-v1", "projects": [{"path": "MISSING"}]}', "not a folder"),
+])
+def test_cli_import_details_rejects_bad_files_without_saving(projects, tmp_path, content, message):
+    alpha = str((projects / "Alpha").resolve())
+    content = content.replace("PROJECT", json.dumps(alpha)[1:-1]).replace(
+        "MISSING", json.dumps(str(tmp_path / "gone"))[1:-1])
+    target = tmp_path / "details.json"
+    target.write_text(content, encoding="utf-8")
+    result = cli("--import-details", target)
+    assert result.returncode != 0 and message in result.stderr and "Traceback" not in result.stderr
+    assert exports.saved_details() == {}
+
+
+def test_cli_import_details_saves_under_the_path_a_scan_uses(projects, tmp_path):
+    # A relative path, and one written with extra separators and "." parts, as a
+    # hand-edited file or one from another tool might have them.
+    loose = str(projects) + "/./Beta/"
+    if os.name == "nt":
+        loose = loose.replace("\\", "/")
+    data = {"format": "priorfolio-details-v1", "projects": [
+        {"path": "projects/Alpha", "title": "Relative"}, {"path": loose, "title": "Loose"}]}
+    target = tmp_path / "details.json"
+    target.write_text(json.dumps(data), encoding="utf-8")
+    imported = cli("--import-details", target, cwd=tmp_path)
+    assert imported.returncode == 0 and "2 project(s)" in imported.stdout, imported.stderr
+    assert exports.saved_details() == {str((projects / "Alpha").resolve()): {"title": "Relative"},
+                                       str((projects / "Beta").resolve()): {"title": "Loose"}}
+    shown = cli("--root", projects, "--details", "all")
+    assert "Public title: Relative" in shown.stdout and "Public title: Loose" in shown.stdout
+
+    # Two spellings of one folder are the same project.
+    data["projects"][1]["path"] = str(projects / "Alpha")
+    target.write_text(json.dumps(data), encoding="utf-8")
+    twice = cli("--import-details", target, cwd=tmp_path)
+    assert twice.returncode != 0 and "listed twice" in twice.stderr
+
+
+def test_cli_refuses_to_save_over_settings_it_cannot_read(projects, isolated_settings):
+    assert cli("--root", projects, "--details", "Alpha", "--title", "Kept").returncode == 0
+    good = json.loads(isolated_settings.read_text(encoding="utf-8"))
+    good["folders"] = [str(projects)]
+    broken = json.dumps(good, indent=2).replace('"folders"', ',"folders"', 1)  # one stray comma
+    isolated_settings.write_text(broken, encoding="utf-8")
+
+    edited = cli("--root", projects, "--details", "Beta", "--title", "Lost")
+    assert edited.returncode != 0 and "Traceback" not in edited.stderr
+    assert str(isolated_settings) in edited.stderr and "Nothing was saved" in edited.stderr
+    assert isolated_settings.read_text(encoding="utf-8") == broken
+
+    run = cli("--root", projects, "--select", "Alpha", "--no-snapshot", "--out", projects.parent / "runs")
+    assert isolated_settings.read_text(encoding="utf-8") == broken
+    assert "could not be added to the remembered runs" in run.stderr
+
+
+def test_desktop_does_not_save_over_settings_it_cannot_read(desktop):
+    broken = gui.SETTINGS.read_text(encoding="utf-8") + "}"
+    gui.SETTINGS.write_text(broken, encoding="utf-8")
+    desktop.save_sources()
+    assert gui.SETTINGS.read_text(encoding="utf-8") == broken
+    assert "Settings could not be saved" in desktop.status_var.get()
+
+
+def listed_names(result):
+    """Project names from --list output, in its numbered order."""
+    rows = [line.split() for line in result.stdout.splitlines() if line[:3].strip().isdigit()]
+    assert [int(row[0]) for row in rows] == list(range(1, len(rows) + 1)), result.stdout
+    return [row[1] for row in rows]
+
+
+@pytest.fixture
+def saved(projects, tmp_path, isolated_settings):
+    """Settings as the desktop app saves them: a folder of projects, a single
+    project, and a folder that has since been deleted."""
+    solo = tmp_path / "elsewhere" / "Solo"
+    write(solo, {"notes.txt": "solo\n"})
+    isolated_settings.write_text(json.dumps({
+        "folders": [str(projects), str(tmp_path / "deleted")], "projects": [str(solo)]}))
+    return solo
+
+
+def test_cli_saved_lists_the_folders_and_projects_saved_in_the_app(projects, saved, tmp_path):
+    listed = cli("--saved", "--list", cwd=tmp_path)
+    assert listed.returncode == 0, listed.stderr
+    assert listed_names(listed) == ["Alpha", "Beta", "Solo"]
+    assert f"no longer exists: {tmp_path / 'deleted'}" in listed.stderr
+
+
+def test_cli_saved_works_with_select_and_details(projects, saved, tmp_path):
+    edited = cli("--saved", "--details", "Solo", "--title", "Saved solo")
+    assert edited.returncode == 0, edited.stderr
+    assert exports.saved_details()[str(saved.resolve())] == {"title": "Saved solo"}
+    target = tmp_path / "details.json"
+    assert cli("--saved", "--export-details", target).returncode == 0
+    assert [p["name"] for p in json.loads(target.read_text(encoding="utf-8"))["projects"]] == [
+        "Alpha", "Beta", "Solo"]
+    made = cli("--saved", "--select", "3", "--no-snapshot", "--out", tmp_path / "runs")
+    assert made.returncode == 0, made.stderr
+    (run,) = (tmp_path / "runs").iterdir()
+    assert "## 1. Saved solo" in (run / "disclosure.md").read_text(encoding="utf-8")
+
+
+def test_cli_saved_combines_with_root_and_add(projects, saved, tmp_path):
+    other = tmp_path / "other"
+    write(other / "Gamma", {"g.txt": "g\n"})
+    write(tmp_path / "Extra", {"e.txt": "e\n"})
+    listed = cli("--saved", "--root", other, "--add", tmp_path / "Extra", "--list")
+    assert listed.returncode == 0, listed.stderr
+    assert listed_names(listed) == ["Alpha", "Beta", "Gamma", "Solo", "Extra"]
+
+
+@pytest.mark.parametrize("settings", [None, {"folders": [], "projects": []}, "only deleted"])
+def test_cli_saved_with_nothing_saved_stops_and_writes_nothing(projects, tmp_path, isolated_settings, settings):
+    if settings == "only deleted":
+        settings = {"folders": [str(tmp_path / "deleted")]}
+    if settings is not None:
+        isolated_settings.write_text(json.dumps(settings))
+    before = isolated_settings.read_bytes() if isolated_settings.exists() else None
+    result = cli("--saved", "--select", "all", "--out", tmp_path / "runs", cwd=projects)
+    assert result.returncode != 0 and "Traceback" not in result.stderr
+    assert "No saved folders or projects" in result.stderr and "--root" in result.stderr
+    assert not (tmp_path / "runs").exists()
+    assert (isolated_settings.read_bytes() if isolated_settings.exists() else None) == before
+
+
+def test_cli_without_sources_still_scans_the_current_folder(projects, saved):
+    listed = cli("--list", cwd=projects)
+    assert listed.returncode == 0, listed.stderr
+    assert listed_names(listed) == ["Alpha", "Beta"]
+
+
+def test_cli_saved_numbers_projects_as_the_app_does(desktop, tmp_path):
+    solo = tmp_path / "elsewhere" / "Solo"
+    write(solo, {"notes.txt": "solo\n"})
+    data = json.loads(gui.SETTINGS.read_text(encoding="utf-8"))
+    data["projects"] = [str(solo)]
+    gui.SETTINGS.write_text(json.dumps(data))
+    desktop.sources = desktop.load_sources()
+    button(desktop, "Rescan").invoke()
+    settle(desktop)
+    listed = cli("--saved", "--list", settings=gui.SETTINGS)
+    assert listed.returncode == 0, listed.stderr
+    assert listed_names(listed) == [p["name"] for p in desktop.projects] == ["Alpha", "Beta", "Solo"]
+
+
+def test_cli_runs_lists_remembered_runs_and_backup_state(projects, tmp_path):
+    assert "No remembered runs." in cli("--runs").stdout
+    for name in ("Alpha", "Beta"):
+        assert cli("--root", projects, "--select", name, "--out", tmp_path / "runs").returncode == 0
+    first, second = sorted((tmp_path / "runs").iterdir())
+    target = tmp_path / "backup.zip"
+    assert cli("--backup", first, "--destination", target).returncode == 0
+    assert cli("--confirm-backup", first, "--backup-method", "cloud").returncode == 0
+    shutil.rmtree(second)
+    listed = cli("--runs").stdout.splitlines()
+    assert listed[0].startswith("FOLDER NOT FOUND") and listed[0].endswith(str(second.resolve()))
+    assert listed[1].startswith("confirmed by you") and "need a remote backup" not in "\n".join(listed)
+
+
+def test_desktop_sees_details_and_runs_saved_by_the_cli(desktop, tmp_path):
+    root = tmp_path / "projects"
+    settings = gui.SETTINGS
+    assert cli("--root", root, "--details", "Alpha", "--title", "From the CLI",
+               settings=settings).returncode == 0
+    assert cli("--root", root, "--select", "Beta", "--no-snapshot", "--out", tmp_path / "cli-runs",
+               settings=settings).returncode == 0
+    (cli_run,) = (tmp_path / "cli-runs").iterdir()
+    assert cli_run.resolve() in desktop.pending_runs()
+
+    button(desktop, "Rescan").invoke()
+    settle(desktop)
+    alpha = next(p for p in desktop.projects if p["name"] == "Alpha")
+    assert alpha["disclosure"]["title"] == "From the CLI"
+
+    # Saving from the window keeps what the CLI wrote.
+    generate(desktop, "Alpha")
+    assert "From the CLI" in desktop.table_text.get("1.0", "end")
+    saved = json.loads(settings.read_text(encoding="utf-8"))
+    assert str(cli_run.resolve()) in saved["runs"]
+    assert saved["details"][alpha["path"]]["title"] == "From the CLI"
+    assert saved["folders"] == [str(root)]
+
+
+def test_cli_verify_remembers_runs_whose_evidence_verifies(projects, tmp_path):
+    made = cli("--root", projects, "--select", "Alpha", "--out", tmp_path / "runs",
+               settings=tmp_path / "maker.json")  # a run made elsewhere, e.g. a restored copy
+    assert made.returncode == 0, made.stderr
+    (run,) = (tmp_path / "runs").iterdir()
+
+    wrong = cli("--verify", run, "--expect", "0" * 64)
+    assert wrong.returncode == 1 and "remembered" not in wrong.stdout
+    assert exports.saved_runs() == []
+
+    # Work continued on the project: the run itself is intact, so it is remembered.
+    (projects / "Alpha" / "work.txt").write_text("changed\n")
+    changed = cli("--verify", run, "--against-disk")
+    assert changed.returncode == 1 and "Alpha: on disk changed: work.txt" in changed.stdout
+    assert "This run is remembered" in changed.stdout
+    assert exports.saved_runs() == [run.resolve()]
+    assert cli("--runs").stdout.startswith("BACKUP REQUIRED")
+
+
+def test_cli_verify_does_not_remember_a_damaged_run(projects, tmp_path):
+    assert cli("--root", projects, "--select", "Alpha", "--out", tmp_path / "runs").returncode == 0
+    (run,) = (tmp_path / "runs").iterdir()
+    settings = tmp_path / "fresh.json"
+    (snapshot,) = (run / "snapshots").glob("*.zip")
+    snapshot.write_bytes(snapshot.read_bytes() + b"x")
+    damaged = cli("--verify", run, "--against-disk", settings=settings)
+    assert damaged.returncode == 1 and "snapshot zip does not match" in damaged.stdout
+    assert "remembered" not in damaged.stdout and not settings.exists()
+
+    unreadable = cli("--verify", tmp_path, settings=settings)
+    assert unreadable.returncode == 1 and not settings.exists()

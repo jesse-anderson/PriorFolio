@@ -302,11 +302,14 @@ def test_verify_button_reports_intact_evidence_and_later_changes(app, workspace,
     assert (run_dir / "BUNDLE_SHA256.txt").read_text().split()[0] in app.verify_report
 
     (workspace / "plain" / "main.py").write_text("edited later\n")
+    checked, check = [], sa._verify_project
+    monkeypatch.setattr(sa, "_verify_project", lambda *a, **kw: checked.append(a[1]["name"]) or check(*a, **kw))
     button(app, "Verify a run").invoke()
     settle(app)
     assert "EVIDENCE: OK" in app.verify_report
     assert "1 difference(s) since this run" in app.verify_report
     assert "plain: on disk changed: main.py" in app.verify_report
+    assert checked == ["plain"]  # the evidence and the folder on disk in one pass
 
     manifest = run_dir / "manifests" / "plain.sha256"
     manifest.write_bytes(manifest.read_bytes() + b"tampered\n")
