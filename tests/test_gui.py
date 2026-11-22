@@ -2,6 +2,7 @@ import gc
 import json
 import time
 import tkinter as tk
+import tkinter.font
 
 import pytest
 
@@ -111,6 +112,77 @@ def test_window_fits_on_the_screen(app):
         assert right_edge <= app.winfo_rootx() + app.winfo_width(), label
 
 
+def use_font_size(monkeypatch, size):
+    """Give windows made from now on TkDefaultFont and TkHeadingFont at this point size."""
+    create = tk.Tk.__init__
+
+    def large_fonts(self, *args, **kwargs):
+        create(self, *args, **kwargs)
+        for name in ("TkDefaultFont", "TkHeadingFont"):
+            tk.font.nametofont(name, root=self).configure(size=size)
+
+    monkeypatch.setattr(tk.Tk, "__init__", large_fonts)
+
+
+@pytest.mark.parametrize("size", [None, 24])
+def test_rows_and_columns_fit_their_text(size, monkeypatch, request):
+    """Large or high-DPI fonts must not be clipped by fixed row heights or column widths."""
+    if size:
+        use_font_size(monkeypatch, size)
+    app = request.getfixturevalue("app")
+    body = tk.font.nametofont("TkDefaultFont")
+    heading = tk.font.nametofont("TkHeadingFont")
+    app.update_idletasks()
+    row = app.tree.get_children()[0]
+    app.tree.see(row)
+    app.update()
+    assert app.tree.bbox(row)[3] >= body.metrics("linespace")
+    for col in ("commit", "date"):
+        value = app.tree.set(row, col)
+        needed = max(body.measure(value), heading.measure(app.tree.heading(col, "text")))
+        assert app.tree.column(col, "width") >= needed, col
+
+
+# Each of these loops on the unfixed code on some platform: the short window on
+# Linux, the large font on Windows.
+@pytest.mark.parametrize("size, height", [(None, 300), (24, 450)])
+def test_window_too_short_for_both_panes_still_settles(size, height, monkeypatch, request):
+    """When the panes' minimums cannot both fit, the divider must settle (#2)."""
+    if size:
+        use_font_size(monkeypatch, size)
+    calls = []
+    fit = gui.App.fit_panes
+
+    def counted(self):
+        calls.append(self.panes.sashpos(0))
+        if len(calls) <= 200:  # past this, stop the loop so the test fails, not hangs
+            fit(self)
+
+    monkeypatch.setattr(gui.App, "fit_panes", counted)
+    app = request.getfixturevalue("app")  # the counter is in place before startup, which loops too
+    assert len(calls) <= 200, f"fit_panes looped on startup; divider positions: {calls[-5:]}"
+    calls.clear()
+    app.minsize(1, 1)
+    app.geometry(f"1000x{height}")
+    app.update()
+    assert len(calls) <= 200, f"fit_panes looped; divider positions: {calls[-5:]}"
+    calls.clear()
+    app.update()
+    assert len(calls) <= 1
+
+
+def test_list_keeps_three_rows_when_there_is_room(app):
+    app.geometry("1000x900")
+    settle(app)
+    rows = app.tree.get_children()
+    assert len(rows) >= 3
+    app.tree.see(rows[0])
+    app.update()
+    for row in rows[:3]:
+        _, y, _, height = app.tree.bbox(row)
+        assert y + height <= app.tree.winfo_height(), row
+
+
 def test_clicking_rows_ticks_and_unticks_them(app):
     index = click_row(app, "plain")
     assert app.checked == {index} and app.tree.set(str(index), "sel") == gui.CHECKED
@@ -120,6 +192,8 @@ def test_clicking_rows_ticks_and_unticks_them(app):
 
 @pytest.mark.parametrize("screen", [(1024, 768), (880, 670)])
 def test_small_screen_keeps_project_rows_and_scrollbar_usable(screen, monkeypatch, request):
+    """The list keeps three rows when it can, but on a small screen with large fonts
+    it gives rows up before the action buttons are pushed off the window."""
     monkeypatch.setattr(tk.Tk, "winfo_screenwidth", lambda self: screen[0])
     monkeypatch.setattr(tk.Tk, "winfo_screenheight", lambda self: screen[1])
     app = request.getfixturevalue("app")
@@ -127,7 +201,7 @@ def test_small_screen_keeps_project_rows_and_scrollbar_usable(screen, monkeypatc
     second = click_row(app, "repo")
     assert app.checked == {first, second}
     _, y, _, height = app.tree.bbox(str(second))
-    assert app.tree.winfo_height() >= 3 * height
+    assert app.tree.winfo_height() >= height
     assert y + height <= app.tree.winfo_height()
     scrollbar = next(child for child in app.tree.master.winfo_children()
                      if child.winfo_class() == "TScrollbar")
